@@ -34,13 +34,19 @@ import disasm32                     # noqa: E402
 def main(argv):
     exe, catalog, out = argv[0], argv[1], argv[2]
     merge = argv[argv.index("--merge") + 1:] if "--merge" in argv else []
-    data = open(exe, "rb").read()
+    raw = open(exe, "rb").read()
     cat = json.load(open(catalog))
     base = cat["image_base"]
+    # Indexed by VA - base: the file keeps .text at 0x400, not at RVA 0x1000,
+    # so slicing the raw file by VA read every function 0xC00 bytes off (in
+    # the 2005 build: 14 immediates found in the whole exe, and
+    # `push 0x4200A0` at 0x4211A2 was never seen -> ICALL unresolved at race start).
+    import pefile
+    data = bytes(pefile.PE(data=raw, fast_load=True).get_memory_mapped_image())
     md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
     md.detail = True
     info = analyze_pe(exe)
-    dis = disasm32.Disassembler(data, info.image_base, info.sections)
+    dis = disasm32.Disassembler(raw, info.image_base, info.sections)
     catalogued = {f["address"] for f in cat["functions"]}
     found = set()
     immediates = set()

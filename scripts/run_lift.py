@@ -32,6 +32,15 @@ from pe_analyze import analyze_pe, build_iat_map   # noqa: E402
 import disasm32                                     # noqa: E402
 from disasm32 import Disassembler, Function, BasicBlock, Instruction  # noqa: E402
 
+# pcrecomp reads at most 256 jump-table entries; Speed.exe has larger dense
+# switches (the 2005 build's 0x5C36E0: `cmp eax, 0x11F; ja`, 288 arms), whose
+# arms past 256 then stopped at "ITAIL unresolved". A table still ends at its
+# first non-code entry, so a higher cap only reaches the real arms. Both the
+# recursive descent and the interior walk read through table_entries.
+JUMP_TABLE_LIMIT = 4096
+disasm32.table_entries.__defaults__ = (JUMP_TABLE_LIMIT,)
+Disassembler.jump_table_targets.__defaults__ = (JUMP_TABLE_LIMIT,)
+
 
 def restore_seeds(dis, iat, funcs, seeds):
     """Seeds the catalog lost to a bogus neighbour (NFSU1: no relocations).

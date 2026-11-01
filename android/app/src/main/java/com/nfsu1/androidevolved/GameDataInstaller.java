@@ -29,11 +29,19 @@ final class GameDataInstaller {
     static File gameRoot() { return new File(Environment.getExternalStorageDirectory(), "nfsu1"); }
 
     static boolean needsInstall(Context context) {
+        if (!hasBundledData(context)) return false;  // light APK: the player copies the data
         try {
             long installed = Long.parseLong(new String(
                     Files.readAllBytes(new File(gameRoot(), MARKER).toPath()), StandardCharsets.UTF_8).trim());
             return installed != versionCode(context);
         } catch (Exception error) { return true; }
+    }
+
+    static boolean hasBundledData(Context context) {
+        try {
+            String[] children = context.getAssets().list(ASSET_ROOT);
+            return children != null && children.length > 0;
+        } catch (IOException error) { return false; }
     }
 
     /** Copies every file under assets/nfsu1 to gameRoot(), reporting progress as 0..100. */

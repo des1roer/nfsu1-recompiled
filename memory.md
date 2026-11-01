@@ -55,6 +55,12 @@ cp "<game folder>/Speed.exe" work/Speed.analysis.exe
 source scripts/vsenv.sh x86
 python scripts/data_seeds.py work/Speed.analysis.exe work/seeds_all.json
 python scripts/run_lift.py catalog work/Speed.analysis.exe work/seeds_all.json work/catalog.json
+# code_seeds: functions named only by code immediates (`mov [esi+0F4h], 656D30h`)
+# and switch arms. Repeat both lines until the function count stops changing
+# (2 passes here), always merging the accumulated seeds.
+cp work/seeds_all.json work/seeds_acc.json
+python scripts/code_seeds.py work/Speed.analysis.exe work/catalog.json work/seeds_new.json --merge work/seeds_acc.json && cp work/seeds_new.json work/seeds_acc.json
+python scripts/run_lift.py catalog work/Speed.analysis.exe work/seeds_acc.json work/catalog.json
 python scripts/run_lift.py lift work/Speed.analysis.exe work/catalog.json src/recomp/gen
 python scripts/abk_module.py "<game folder>" work/abk_analysis.dll work/abk_seeds.json src/recomp/gen_abk/abk_blocks.c
 python scripts/run_lift.py catalog work/abk_analysis.dll work/abk_seeds.json work/abk_catalog.json
@@ -146,6 +152,40 @@ did not move (24 code pointers, 23 distinct blocks, as in 1.4).
   (logged "Widescreen unavailable for ..."); the game stays 4:3.
 - `src/runtime/nfs_runtime.c` (Windows desktop host only) still names 1.4's
   timer list in its crash report; the desktop host stays 1.4-only.
+
+### Jump tables over 256 entries
+
+Second boot stop on this build: `ITAIL unresolved 0x005c42e2 from
+0x005c36e0`. pcrecomp's `disasm32` reads at most 256 jump-table entries;
+`0x5C36E0` (a lexer/parser) has `cmp eax, 0x11F; ja` = 288 arms, so arms
+257-288 were never catalogued. `scripts/run_lift.py` now raises the cap
+(`JUMP_TABLE_LIMIT`, by patching the defaults of `disasm32.table_entries` and
+`Disassembler.jump_table_targets`; a table still ends at its first non-code
+entry). Catalog diff vs. the 256 cap: only `0x5C2xxx-0x5C4xxx` changed
+(288 and 292-entry tables, both matching their `cmp`). This needs a **catalog**
+re-run, not just a lift. Speed.exe 1.4 likely has the same switch; its
+catalog should be regenerated too.
+
+### Skipping code_seeds.py stops the boot
+
+Third stop on this build: `ICALL unresolved 0x00656d30 from 0x00650da0`. The
+function is stored into an object as an immediate (`mov dword ptr [esi+0F4h],
+656D30h` at `0x65109E`): no call, no data pointer, so only
+`scripts/code_seeds.py` seeds it. The first build skipped that script (the
+README's command list omits it too). With it: 20,203 functions (13 found only
+through immediates); without it, every such callback is an unresolved ICALL.
+
+### code_seeds.py read the wrong bytes
+
+Fourth stop, at race start: `ICALL unresolved 0x004200a0 from 0x00564780`
+(callback passed as `push 0x4200A0` at `0x4211A2`; a bogus start at
+`0x4200A9`, mid-`fld`, covered it). `code_seeds.py` sliced the **raw file**
+by `VA - image_base`, but `.text` is at file offset `0x400`, RVA `0x1000`: it
+disassembled every function `0xC00` bytes off. Fixed to index the
+memory-mapped image: switch tables read 415 -> 1165, the callback seeded, the
+bogus start removed (20,199 functions). Of the immediates it seeds, only
+`0x504354`/`0x505253` stay out, and those are FourCC tags ("TCP", "SRP").
+The same bug applies to Speed.exe 1.4 if its `.text` is also at file `0x400`.
 
 ### Rebuilding after a change to hooks/overrides
 
