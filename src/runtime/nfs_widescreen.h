@@ -21,6 +21,9 @@ float nfs_widescreen_hud_pos_x(void);
 int nfs_widescreen_hud_entries(void);
 /* Vertical offset (480-line HUD units, negative = up) added to the minimap. */
 void nfs_widescreen_set_minimap_offset(float dy);
+/* Reads <game_root>/scripts/MinimapRelocate.txt ("DX DY", HUD units), creating
+ * a commented "0 0" template when it is missing. Call once after the image loads. */
+void nfs_minimap_config(const char* game_root);
 /* Game frame pacing (the game caps itself at 60): fps >= 30 replaces its 1/60 s
  * frame time; 0 keeps the original. apply() re-asserts it once per frame,
  * since the game re-sets 1/60 on mode changes. */

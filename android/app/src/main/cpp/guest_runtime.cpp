@@ -734,6 +734,7 @@ std::string connectGuestRuntime(const char* executable) {
 #endif
         loadImage(executable);
         nfs_frontend_cursor_units(1);  // touch hands out the cursor in front-end units
+        nfs_minimap_config(hostGameRoot.c_str());
         if(guestWidescreen){
             nfs_widescreen_init(hostGameRoot.c_str());
             // Landscape surface: the long side over the short one.
@@ -823,7 +824,7 @@ void setGuestOnlineServer(const std::string& host){std::lock_guard<MachineMutex>
 void setGuestWidescreen(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWidescreen=enabled;}
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
-    for(const char* known:{"Spanish","English","French","German","Italian","Dutch","Swedish","Korean","Chinese"})
+    for(const char* known:{"Spanish","English","French","German","Italian","Dutch","Swedish","Russian","Korean","Chinese"})
         if(language&&std::strcmp(known,language)==0){guestLanguage=known;NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Selected guest language: %s",known);return;}
     guestLanguage="Spanish";
 }

@@ -31,8 +31,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include "nfs_runtime.h"
-#elif defined(__ANDROID__)
+#else
+#include <sys/stat.h>
+#ifdef __ANDROID__
 #include <android/log.h>
+#endif
 #endif
 
 static float s_display_aspect;          /* 0: off, the game keeps 4:3 */
@@ -112,6 +115,85 @@ static void hud_mem_pair(uint32_t va_x, uint32_t va_y, int minimap) {
     widescreen_hud(&x, &y, minimap);
     MEM32(va_x) = x; MEM32(va_y) = y;
 }
+
+/* <game_root>/scripts/MinimapRelocate.txt: "DX DY" on one line (640x480 HUD
+ * units, DX > 0 right, DY < 0 up), so players move the minimap by editing a
+ * text file on the phone and relaunching. Env NFSU1_MINIMAP_RELOCATE_DX/DY
+ * (desktop testing) win over the file. Applies with widescreen on or off. */
+static float s_minimap_dx, s_minimap_dy;
+static const char k_minimap_template[] =
+    "# Minimap position / Положение миникарты\n"
+    "# One line: DX DY in the game's 640x480 HUD units. DX > 0 right, DY < 0 up.\n"
+    "# Одна строка: DX DY в единицах HUD игры (640x480). DX > 0 вправо, DY < 0 вверх.\n"
+    "# 0 0 = original position / исходное положение. Example / пример: 0 -300\n"
+    "# Close the game fully and start it again to apply / Перезапустите игру.\n"
+    "0 0\n";
+void nfs_minimap_config(const char *game_root) {
+    char path[1024], line[256];
+    const char *dx_env = getenv("NFSU1_MINIMAP_RELOCATE_DX"), *dy_env = getenv("NFSU1_MINIMAP_RELOCATE_DY");
+    FILE *f;
+    snprintf(path, sizeof path, "%s/scripts/MinimapRelocate.txt", game_root);
+    if ((f = fopen(path, "r")) != NULL) {
+        while (fgets(line, sizeof line, f)) {
+            float dx, dy;
+            if (line[0] == '#') continue;
+            if (sscanf(line, "%f %f", &dx, &dy) == 2) { s_minimap_dx = dx; s_minimap_dy = dy; break; }
+        }
+        fclose(f);
+    } else {
+        char dir[1024];
+        snprintf(dir, sizeof dir, "%s/scripts", game_root);
+#ifdef _WIN32
+        CreateDirectoryA(dir, NULL);
+#else
+        mkdir(dir, 0755);
+#endif
+        if ((f = fopen(path, "w")) != NULL) { fputs(k_minimap_template, f); fclose(f); }
+    }
+    if (dx_env) s_minimap_dx = (float)atof(dx_env);
+    if (dy_env) s_minimap_dy = (float)atof(dy_env);
+}
+
+/* Minimap position reads (the mod's MinimapHook1/2/3), for both supported
+ * builds: Speed.exe 1.4 and the uniws-patched one (same code, -0x5A0). The
+ * lifted code holds only the sites that are instructions in its own exe; the
+ * opcode check keeps a site that lands elsewhere in the other build inert.
+ * The .dat widescreen offset stays on the 1.4 sites only (uniws handles the
+ * patched exe's HUD itself). */
+static const struct { uint32_t va; uint8_t op[3]; uint8_t ecx; uint8_t off; uint8_t widescreen; } k_minimap[] = {
+    { 0x00590DDFu, {0xD9, 0x41, 0x68}, 1, 0x68, 1 },   /* fld [ecx+68h] */
+    { 0x0058FB1Cu, {0xD9, 0x40, 0x68}, 0, 0x68, 1 },   /* fld [eax+68h] */
+    { 0x0058E5B2u, {0xD9, 0x40, 0x1C}, 0, 0x1C, 1 },   /* fld [eax+1Ch] */
+    { 0x0059083Fu, {0xD9, 0x41, 0x68}, 1, 0x68, 0 },
+    { 0x0058F57Cu, {0xD9, 0x40, 0x68}, 0, 0x68, 0 },
+    { 0x0058E012u, {0xD9, 0x40, 0x1C}, 0, 0x1C, 0 },
+};
+/* MiniMap_Pos / Drift_MiniMap_Pos anchors; once moved they no longer match,
+ * so the in-place edit happens once per element. */
+static int is_minimap_anchor(uint32_t x, uint32_t y) {
+    return x == 0x42AC0000u && (y == 0x43700000u || y == 0x43880000u);
+}
+static int minimap_hook(uint32_t va) {
+    for (unsigned i = 0; i < sizeof k_minimap / sizeof k_minimap[0]; i++) {
+        uint32_t base, x, y;
+        int moved;
+        if (k_minimap[i].va != va) continue;
+        if (MEM8(va) != k_minimap[i].op[0] || MEM8(va + 1) != k_minimap[i].op[1] || MEM8(va + 2) != k_minimap[i].op[2]) return 1;
+        base = (k_minimap[i].ecx ? g_ecx : g_eax) + k_minimap[i].off;
+        x = MEM32(base); y = MEM32(base + 4);
+        moved = is_minimap_anchor(x, y) && (s_minimap_dx != 0.0f || s_minimap_dy != 0.0f);
+        if (k_minimap[i].widescreen && s_display_aspect > 0.0f) widescreen_hud(&x, &y, 1);
+        if (moved) {
+            float fx, fy;
+            memcpy(&fx, &x, 4); memcpy(&fy, &y, 4);
+            fx += s_minimap_dx; fy += s_minimap_dy;
+            memcpy(&x, &fx, 4); memcpy(&y, &fy, 4);
+        }
+        MEM32(base) = x; MEM32(base + 4) = y;
+        return 1;
+    }
+    return 0;
+}
 float nfs_widescreen_hud_pos_x(void) { return s_hud_pos_x; }
 
 void nfs_widescreen_init(const char *game_root) { (void)game_root; }
@@ -141,6 +223,7 @@ void recomp_hook(uint32_t va) {
         MEM32(g_esp + 0xC) = 480;
         return;
     }
+    if (minimap_hook(va)) return;
     if (s_display_aspect <= 0.0f) return;
     for (unsigned i = 0; i < sizeof k_hit / sizeof k_hit[0]; i++) {
         if (k_hit[i].va != va) continue;
@@ -177,8 +260,12 @@ void recomp_hook(uint32_t va) {
     case 0x004F1E31u: wrf(g_esp + 0x60, s_hud_pos_x); break;
     case 0x004F26E9u: wrf(g_esp + 0x50, s_hud_pos_x); break;
     case 0x004F314Bu: wrf(g_esp + 0x19C, s_hud_pos_x); break;   /* mouse arrow origin */
-    /* Minimap centre `fadd [0x6CC910]` keeps the original 320 (the mod's fMinimapPosX). */
-    case 0x0058E5C3u: g_st[0] -= (double)(s_hud_pos_x - 320.0f); break;
+    /* Minimap centre `fadd [0x6CC910]` keeps the original 320 (the mod's fMinimapPosX).
+     * In the uniws-patched exe this VA is a `mov`, so check the fadd first. */
+    case 0x0058E5C3u:
+        if (MEM8(va - 6) == 0xD8 && MEM8(va - 5) == 0x05 && MEM32(va - 4) == 0x006CC910u)
+            g_st[0] -= (double)(s_hud_pos_x - 320.0f);
+        break;
     /* Rear-view mirror quad X (440/200/200/440), shifted with the HUD centre. */
     case 0x00409F75u: {
         const uint32_t xs[4] = { 0x6C, 0x7C, 0x8C, 0x9C };
@@ -187,10 +274,6 @@ void recomp_hook(uint32_t va) {
     }
     /* HudHook: eax/ecx = element X/Y just loaded from [edi+1C]/[edi+20]. */
     case 0x004F18D1u: widescreen_hud(&g_eax, &g_ecx, 0); break;
-    /* Minimap hooks: positions read right after (fld [..+68]/[..+1C]). */
-    case 0x00590DDFu: hud_mem_pair(g_ecx + 0x68, g_ecx + 0x6C, 1); break;
-    case 0x0058FB1Cu: hud_mem_pair(g_eax + 0x68, g_eax + 0x6C, 1); break;
-    case 0x0058E5B2u: hud_mem_pair(g_eax + 0x1C, g_eax + 0x20, 1); break;
     /* LapsHook: before `fadd [ebx+1C]`. */
     case 0x004F6DABu: hud_mem_pair(g_ebx + 0x1C, g_ebx + 0x20, 0); break;
     /* FMVWidescreenMode 1 (cropped 16:9): the four pushed quad extents

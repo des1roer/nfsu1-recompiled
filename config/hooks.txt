@@ -22,6 +22,11 @@
 0x00590DDF  MinimapHook1 ([ecx+68h]/[ecx+6Ch])
 0x0058FB1C  MinimapHook2 ([eax+68h]/[eax+6Ch])
 0x0058E5B2  MinimapHook3 ([eax+1Ch]/[eax+20h])
+# The same three in the uniws-patched Speed.exe (code shifted by -0x5A0); the
+# runtime checks the opcode at each, so a site that is not one in the other build is inert.
+0x0059083F  MinimapHook1, uniws-patched exe
+0x0058F57C  MinimapHook2, uniws-patched exe
+0x0058E012  MinimapHook3, uniws-patched exe
 0x004F6DAB  LapsHook ([ebx+1Ch]/[ebx+20h])
 0x004F1FD7  FMV quad extents (FMVWidescreenMode 1)
 0x004F225C  FMV quad extents
