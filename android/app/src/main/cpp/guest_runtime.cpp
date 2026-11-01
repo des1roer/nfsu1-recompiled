@@ -10,6 +10,7 @@
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
 #include "d3d9_bridge.h"
 #include "nfs_widescreen.h"
+#include "nfs_exe_layout.h"
 #endif
 #include <array>
 #include <vector>
@@ -358,12 +359,14 @@ inline uint32_t callGuest(uint32_t va,const std::vector<uint32_t>& args,uint32_t
 // Underground keeps its options (graphics detail, audio, controls) in the
 // profile's .opt file and writes it only when the game is saved, so options
 // changed in the menu were lost when the app was closed, which on Android is
-// how players leave. Speed.exe serializes the live options at 0x7588C4
+// how players leave. Speed.exe 1.4 serializes the live options at 0x7588C4
 // (0x2E5 bytes) in 0x41E200; once they change while a profile is loaded
 // (name at 0x736230) and stay unchanged for 2 s, run the game's own profile
-// config save (0x41C7A0: .opt, then .cfg) as its save would.
+// config save (0x41C7A0: .opt, then .cfg) as its save would. Other builds:
+// the same pieces from their layout (exe_layout.c).
 void saveChangedOptions(){
-    constexpr uint32_t options=0x7588C4u,optionsBytes=0x2E5u,profileName=0x736230u;
+    const uint32_t options=g_nfs_exe->options,optionsBytes=g_nfs_exe->options_bytes,profileName=g_nfs_exe->profile_name;
+    if(!options||!g_nfs_exe->profile_save)return;
     static int64_t nextCheck=0,changedAt=0;static std::string profile;static std::vector<uint8_t> saved,pending;
     int64_t now=steadyMs();if(now<nextCheck)return;nextCheck=now+1000;
     if(!memory->readable(options,optionsBytes)||!memory->readable(profileName,32))return;
@@ -374,7 +377,7 @@ void saveChangedOptions(){
     if(std::equal(saved.begin(),saved.end(),current)){changedAt=0;return;}
     if(!changedAt||!std::equal(pending.begin(),pending.end(),current)){pending.assign(current,current+optionsBytes);changedAt=now;return;}
     if(now-changedAt<2000)return;
-    callGuest(0x41C7A0u,{});
+    callGuest(g_nfs_exe->profile_save,{});
     saved=pending;changedAt=0;
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Options changed in the menu: saved to the %s profile",profile.c_str());
 }
@@ -522,11 +525,14 @@ void loadImage(const char* path) {
         nt.FileHeader.SizeOfOptionalHeader<sizeof(pe_opt_header32)) throw GuestStop("Expected x86 PE32");
     auto opt=nt.OptionalHeader; imageBase=opt.ImageBase; imageSize=opt.SizeOfImage;
     resourceRva=opt.DataDirectory[2].VirtualAddress;resourceSize=opt.DataDirectory[2].Size;
-    // Speed.exe 1.4, or the same build patched by the Universal Widescreen Patcher (accepted at
-    // the user's risk: its entry point moves, so hardcoded absolute VAs elsewhere in this file
-    // may resolve to the wrong data if sections shifted relative to the original).
-    if (imageBase!=0x400000 || (opt.AddressOfEntryPoint!=0x270cb5 && opt.AddressOfEntryPoint!=0x270515))
+    // Speed.exe 1.4 or the 2005 build: the host's own guest addresses come from
+    // the build's layout (src/runtime/exe_layout.c), never from 1.4's constants.
+    if (imageBase!=0x400000 || !nfs_exe_select(opt.AddressOfEntryPoint))
         throw GuestStop("PE layout does not match generated NFSU1 code");
+    // The lifted code must come from this same exe: its entry is a lifted function.
+    if (!recomp_lookup(imageBase+opt.AddressOfEntryPoint))
+        throw GuestStop(std::string(g_nfs_exe->name)+" does not match the lifted code in this build");
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest executable: %s",g_nfs_exe->name);
     // Patched builds can report an unaligned/short SizeOfImage; map every section in full
     // (same approach as the NFSU2 port's loadImage, for the same no-CD/patched-exe reason).
     {
@@ -664,9 +670,14 @@ struct DispatchHash {
     }
 };
 }
+// RECOMP_ENTER (arm64_guest.h) calls here for every build's candidates; only
+// the loaded build's own functions are checked.
 extern "C" void nfs_validate_asset_entry(uint32_t va){
-    if(va==0x00447c00u)validateResourceChunks(arg(2),arg(3));
-    else if(va==0x0059fb80u)validateLanguageTable();
+    if(va==g_nfs_exe->resource_walk){
+        if(g_nfs_exe->resource_walk_regs)validateResourceChunks(g_ecx,g_eax);
+        else validateResourceChunks(arg(2),arg(3));
+    }
+    else if(va==g_nfs_exe->language_lookup)validateLanguageTable();
 }
 extern "C" recomp_func_t recomp_lookup(uint32_t va) {
     // Sound/input/D3D COM and import stubs resolve in recomp_lookup_import.
@@ -735,7 +746,8 @@ std::string connectGuestRuntime(const char* executable) {
         loadImage(executable);
         nfs_frontend_cursor_units(1);  // touch hands out the cursor in front-end units
         nfs_minimap_config(hostGameRoot.c_str());
-        if(guestWidescreen){
+        if(guestWidescreen&&!g_nfs_exe->widescreen)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Widescreen unavailable for %s: original 4:3 geometry",g_nfs_exe->name);
+        else if(guestWidescreen){
             nfs_widescreen_init(hostGameRoot.c_str());
             // Landscape surface: the long side over the short one.
             float longSide=float(std::max(displayWidth.load(),displayHeight.load())),shortSide=float(std::min(displayWidth.load(),displayHeight.load()));

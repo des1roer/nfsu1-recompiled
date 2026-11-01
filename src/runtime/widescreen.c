@@ -27,6 +27,7 @@
 #include <string.h>
 #include "recomp_types.h"
 #include "nfs_widescreen.h"
+#include "nfs_exe_layout.h"
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -155,11 +156,9 @@ void nfs_minimap_config(const char *game_root) {
 }
 
 /* Minimap position reads (the mod's MinimapHook1/2/3), for both supported
- * builds: Speed.exe 1.4 and the uniws-patched one (same code, -0x5A0). The
- * lifted code holds only the sites that are instructions in its own exe; the
- * opcode check keeps a site that lands elsewhere in the other build inert.
- * The .dat widescreen offset stays on the 1.4 sites only (uniws handles the
- * patched exe's HUD itself). */
+ * builds: Speed.exe 1.4 (last field 1) and the 2005 build (same code, -0x5A0;
+ * see exe_layout.c). Only the loaded build's sites act, and only on the
+ * expected opcode. The .dat widescreen offset needs the 1.4 widescreen fix. */
 static const struct { uint32_t va; uint8_t op[3]; uint8_t ecx; uint8_t off; uint8_t widescreen; } k_minimap[] = {
     { 0x00590DDFu, {0xD9, 0x41, 0x68}, 1, 0x68, 1 },   /* fld [ecx+68h] */
     { 0x0058FB1Cu, {0xD9, 0x40, 0x68}, 0, 0x68, 1 },   /* fld [eax+68h] */
@@ -178,6 +177,7 @@ static int minimap_hook(uint32_t va) {
         uint32_t base, x, y;
         int moved;
         if (k_minimap[i].va != va) continue;
+        if (k_minimap[i].widescreen != g_nfs_exe->widescreen) return 1;
         if (MEM8(va) != k_minimap[i].op[0] || MEM8(va + 1) != k_minimap[i].op[1] || MEM8(va + 2) != k_minimap[i].op[2]) return 1;
         base = (k_minimap[i].ecx ? g_ecx : g_eax) + k_minimap[i].off;
         x = MEM32(base); y = MEM32(base + 4);
@@ -198,7 +198,8 @@ float nfs_widescreen_hud_pos_x(void) { return s_hud_pos_x; }
 
 void nfs_widescreen_init(const char *game_root) { (void)game_root; }
 void nfs_widescreen_set_display_aspect(float aspect) {
-    s_display_aspect = aspect > 1.34f ? aspect : 0.0f;
+    /* The hook sites are Speed.exe 1.4's: another build keeps 4:3. */
+    s_display_aspect = aspect > 1.34f && g_nfs_exe->widescreen ? aspect : 0.0f;
 }
 void nfs_widescreen_set_resolution(unsigned width, unsigned height) {
     if (width && height) s_aspect = (float)width / (float)height;
@@ -213,9 +214,11 @@ void recomp_hook(uint32_t va) {
     /* Arrow draw calls: superseded (the touch cursor is already in FE units);
      * the lifted code still calls here, so they stay accepted and inert. */
     if (va == 0x00409EB8u || va == 0x00401832u) return;
-    /* Mouse clamp (0x4131A0) after GetClientRect: the FE-unit cursor of a
-     * touch host spans [0, 2 * fHudPosX] (the mod's ClientRectHook1/2). */
-    if (va == 0x004131B5u) {
+    /* Mouse clamp (1.4: 0x4131A0) after GetClientRect: the FE-unit cursor of a
+     * touch host spans [0, 2 * fHudPosX] (the mod's ClientRectHook1/2). Each
+     * build has its own site (exe_layout.c); the other build's is inert. */
+    if (va == 0x004131B5u || va == 0x004132D5u) {
+        if (va != g_nfs_exe->mouse_clamp_hook) return;
         if (!s_fe_cursor) return;
         MEM32(g_esp + 0x0) = 0;
         MEM32(g_esp + 0x4) = 0;
@@ -224,6 +227,9 @@ void recomp_hook(uint32_t va) {
         return;
     }
     if (minimap_hook(va)) return;
+    /* The remaining sites are Speed.exe 1.4's: in another build they are
+     * whatever instruction happens to sit there. */
+    if (!g_nfs_exe->widescreen) return;
     if (s_display_aspect <= 0.0f) return;
     for (unsigned i = 0; i < sizeof k_hit / sizeof k_hit[0]; i++) {
         if (k_hit[i].va != va) continue;
@@ -261,7 +267,7 @@ void recomp_hook(uint32_t va) {
     case 0x004F26E9u: wrf(g_esp + 0x50, s_hud_pos_x); break;
     case 0x004F314Bu: wrf(g_esp + 0x19C, s_hud_pos_x); break;   /* mouse arrow origin */
     /* Minimap centre `fadd [0x6CC910]` keeps the original 320 (the mod's fMinimapPosX).
-     * In the uniws-patched exe this VA is a `mov`, so check the fadd first. */
+     * Checked as well as the build: the fadd must be there. */
     case 0x0058E5C3u:
         if (MEM8(va - 6) == 0xD8 && MEM8(va - 5) == 0x05 && MEM32(va - 4) == 0x006CC910u)
             g_st[0] -= (double)(s_hud_pos_x - 320.0f);

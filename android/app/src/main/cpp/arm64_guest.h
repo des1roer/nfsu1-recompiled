@@ -4,11 +4,14 @@
 #define RECOMP_GENERATED_CODE
 #include "recomp_types.h"
 // (The NFSU2 port intercepts its resolution selector here; Speed.exe has none hooked yet.)
+// Asset-guarded functions (guest_asset_guards.inc): resource walker and
+// language search of Speed.exe 1.4 and of the 2005 build (exe_layout.c). `va`
+// is a constant in each lifted function, so this folds away elsewhere.
 void nfs_validate_asset_entry(uint32_t va);
 #undef RECOMP_ENTER
 #define RECOMP_ENTER(va) do { \
     g_cur_func=(va); RECOMP_FLAGS_IN(); \
-    if((va)==0x00447c00u||(va)==0x0059fb80u){ \
+    if((va)==0x00447c00u||(va)==0x0059fb80u||(va)==0x00447e60u||(va)==0x0059f5d0u){ \
         RECOMP_REGS_OUT(); nfs_validate_asset_entry(va); RECOMP_REGS_IN(); \
     } \
 } while(0)

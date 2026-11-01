@@ -53,7 +53,7 @@ add_executable(NFSU-Recompiled
   src/host/main.c
   src/host/profiler.c
   src/runtime/nfs_runtime.c
-  src/runtime/overrides.c src/runtime/widescreen.c
+  src/runtime/overrides.c src/runtime/widescreen.c src/runtime/exe_layout.c
   src/runtime/abk_code.c
   src/runtime/d3d9_trace.c
   src/runtime/dinput_trace.c

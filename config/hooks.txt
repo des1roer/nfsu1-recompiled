@@ -2,63 +2,66 @@
 # src/runtime/widescreen.c). Each replaces one patch of ThirteenAG's
 # NFSUnderground.WidescreenFix, found by that mod's byte patterns in Speed.exe
 # 1.4; none is a branch target (checked against work/catalog.json).
+# @1.4 / @2005: the build the site belongs to (scripts/run_lift.py lifts only
+# the loaded exe's own; at another build's address it is unrelated code).
 # VA        purpose
-0x0040875A  render size: widen D3DPRESENT_PARAMETERS to the display aspect
-0x0040DDE0  FixFOV: per-view vertical scale and constants (after fidiv)
-0x0040DE49  FixFOV: fmul [0.5] -> per-view constant
-0x0040DEC1  FixFOV: fdivr [1.0] -> per-view horizontal scale
-0x0040DEF2  FixFOV: fdivr [1.0] -> per-view constant
-0x00409EB8  front-end arrow draw (inert: the touch cursor is in FE units)
-0x00401832  front-end arrow draw (inert)
-0x004131B5  mouse clamp rect after GetClientRect -> wide FE space (touch hosts)
-0x004F20A7  FixHUD anchor X after mov [esp+80h], 320.0
-0x004F2333  FixHUD anchor X after mov [esp+90h], 320.0
-0x004F28B3  FixHUD anchor X after mov [esp+0A0h], 320.0
-0x004F1E31  FixHUD anchor X after mov [esp+60h], 320.0
-0x004F26E9  FixHUD anchor X after mov [esp+50h], 320.0
-0x0058E5C3  minimap centre: fadd [0x6CC910] keeps 320
-0x00409F75  rear-view mirror quad X (440/200/200/440)
-0x004F18D1  HudHook: element X/Y in eax/ecx (.dat offsets)
-0x00590DDF  MinimapHook1 ([ecx+68h]/[ecx+6Ch])
-0x0058FB1C  MinimapHook2 ([eax+68h]/[eax+6Ch])
-0x0058E5B2  MinimapHook3 ([eax+1Ch]/[eax+20h])
-# The same three in the uniws-patched Speed.exe (code shifted by -0x5A0); the
-# runtime checks the opcode at each, so a site that is not one in the other build is inert.
-0x0059083F  MinimapHook1, uniws-patched exe
-0x0058F57C  MinimapHook2, uniws-patched exe
-0x0058E012  MinimapHook3, uniws-patched exe
-0x004F6DAB  LapsHook ([ebx+1Ch]/[ebx+20h])
-0x004F1FD7  FMV quad extents (FMVWidescreenMode 1)
-0x004F225C  FMV quad extents
-0x004F25D1  FMV quad extents
-0x004F314B  mouse arrow origin after mov [esp+19Ch], 320.0
-0x00415358  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x00415CAD  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004B7E14  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004B8C71  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004C1A39  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004D1DF9  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004D516A  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004D66D1  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004DC438  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004E39A8  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004EAA5A  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004F7EDF  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004F7F36  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0054F09A  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0054F363  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x005518D8  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x00557EDC  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x00559BAA  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0055BAEA  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0055CD90  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0055D7F8  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0055F0DA  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x00561C98  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x00562128  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x0056391A  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x00563CFA  mouse hit test after edx = x - 320 -> x - fHudPosX
-0x004B8CF0  mouse hit test after eax = x - 320 -> x - fHudPosX
-0x004D6750  mouse hit test after eax = x - 320 -> x - fHudPosX
-0x004F7D65  mouse hit test after eax = x - 320 -> x - fHudPosX
-0x004F608B  mouse hit test after ecx = x - 320 -> x - fHudPosX
+0x0040875A  @1.4 render size: widen D3DPRESENT_PARAMETERS to the display aspect
+0x0040DDE0  @1.4 FixFOV: per-view vertical scale and constants (after fidiv)
+0x0040DE49  @1.4 FixFOV: fmul [0.5] -> per-view constant
+0x0040DEC1  @1.4 FixFOV: fdivr [1.0] -> per-view horizontal scale
+0x0040DEF2  @1.4 FixFOV: fdivr [1.0] -> per-view constant
+0x00409EB8  @1.4 front-end arrow draw (inert: the touch cursor is in FE units)
+0x00401832  @1.4 front-end arrow draw (inert)
+0x004131B5  @1.4 mouse clamp rect after GetClientRect -> wide FE space (touch hosts)
+0x004F20A7  @1.4 FixHUD anchor X after mov [esp+80h], 320.0
+0x004F2333  @1.4 FixHUD anchor X after mov [esp+90h], 320.0
+0x004F28B3  @1.4 FixHUD anchor X after mov [esp+0A0h], 320.0
+0x004F1E31  @1.4 FixHUD anchor X after mov [esp+60h], 320.0
+0x004F26E9  @1.4 FixHUD anchor X after mov [esp+50h], 320.0
+0x0058E5C3  @1.4 minimap centre: fadd [0x6CC910] keeps 320
+0x00409F75  @1.4 rear-view mirror quad X (440/200/200/440)
+0x004F18D1  @1.4 HudHook: element X/Y in eax/ecx (.dat offsets)
+0x00590DDF  @1.4 MinimapHook1 ([ecx+68h]/[ecx+6Ch])
+0x0058FB1C  @1.4 MinimapHook2 ([eax+68h]/[eax+6Ch])
+0x0058E5B2  @1.4 MinimapHook3 ([eax+1Ch]/[eax+20h])
+# The same three in the 2005 build (code shifted by -0x5A0 there), and its
+# cursor clamp (0x4132C0 = GetClientRect, then the clamp; see src/runtime/exe_layout.c).
+0x0059083F  @2005 MinimapHook1
+0x0058F57C  @2005 MinimapHook2
+0x0058E012  @2005 MinimapHook3
+0x004132D5  @2005 mouse clamp rect after GetClientRect -> wide FE space (touch hosts)
+0x004F6DAB  @1.4 LapsHook ([ebx+1Ch]/[ebx+20h])
+0x004F1FD7  @1.4 FMV quad extents (FMVWidescreenMode 1)
+0x004F225C  @1.4 FMV quad extents
+0x004F25D1  @1.4 FMV quad extents
+0x004F314B  @1.4 mouse arrow origin after mov [esp+19Ch], 320.0
+0x00415358  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x00415CAD  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004B7E14  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004B8C71  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004C1A39  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004D1DF9  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004D516A  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004D66D1  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004DC438  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004E39A8  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004EAA5A  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004F7EDF  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004F7F36  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0054F09A  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0054F363  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x005518D8  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x00557EDC  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x00559BAA  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0055BAEA  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0055CD90  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0055D7F8  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0055F0DA  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x00561C98  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x00562128  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x0056391A  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x00563CFA  @1.4 mouse hit test after edx = x - 320 -> x - fHudPosX
+0x004B8CF0  @1.4 mouse hit test after eax = x - 320 -> x - fHudPosX
+0x004D6750  @1.4 mouse hit test after eax = x - 320 -> x - fHudPosX
+0x004F7D65  @1.4 mouse hit test after eax = x - 320 -> x - fHudPosX
+0x004F608B  @1.4 mouse hit test after ecx = x - 320 -> x - fHudPosX

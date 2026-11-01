@@ -11,8 +11,9 @@
 #include <string.h>
 #include "recomp_types.h"
 #include "nfs_runtime.h"
+#include "nfs_exe_layout.h"
 
-/* 0x00643A39 (SPEED2 0x006F5FC5, same bytes): Cyrix detection.
+/* 0x00643A39 (2005 build: 0x006432A9; SPEED2 0x006F5FC5; same bytes): Cyrix detection.
  *   xor eax,eax; sahf; mov eax,5; mov ebx,2; div bl; lahf; cmp ah,2; ...
  * Cyrix parts leave the flags untouched across DIV, so AH reads back 2 (the
  * value SAHF loaded, plus the always-set bit 1); Intel/AMD do not. DIV's flags
@@ -23,7 +24,8 @@ static void ov_is_cyrix(void) {
     g_esp += 4;
 }
 
-/* 0x00672630 and 0x00678D30 (SPEED2 0x0075CFD0, same bytes): the static CRT
+/* 0x00672630 and 0x00678D30 (2005 build: 0x00671E80 and 0x00678580; SPEED2
+ * 0x0075CFD0; all the same bytes but for the jump tables): the static CRT
  * memcpy/memmove(dst, src, n) (cdecl, returns dst).
  * It handles overlap by copying backward, and reaches its unrolled dword moves
  * through computed jumps into the middle of straight-line blocks (tables at
@@ -37,18 +39,21 @@ static void ov_crt_memmove(void) {
     g_esp += 4;
 }
 
-static const struct { uint32_t va; nfs_override_fn fn; } k_overrides[] = {
-    { 0x00643A39u, ov_is_cyrix },
-    { 0x00672630u, ov_crt_memmove },
-    { 0x00678D30u, ov_crt_memmove },
-    /* Same probe, shifted address: the Universal Widescreen Patcher-modified Speed.exe
-     * used for the embedded-data Android build (see config/overrides.txt). */
-    { 0x006432A9u, ov_is_cyrix },
+/* Per build (entry point, see exe_layout.c): an address of one build is
+ * unrelated code in the other. Keep in step with config/overrides.txt. */
+static const struct { uint32_t entry_rva, va; nfs_override_fn fn; } k_overrides[] = {
+    { 0x270CB5u, 0x00643A39u, ov_is_cyrix },
+    { 0x270CB5u, 0x00672630u, ov_crt_memmove },
+    { 0x270CB5u, 0x00678D30u, ov_crt_memmove },
+    { 0x270515u, 0x006432A9u, ov_is_cyrix },
+    { 0x270515u, 0x00671E80u, ov_crt_memmove },
+    { 0x270515u, 0x00678580u, ov_crt_memmove },
 };
 
 nfs_override_fn nfs_override_lookup(uint32_t va) {
     for (unsigned i = 0; i < sizeof k_overrides / sizeof k_overrides[0]; i++)
-        if (k_overrides[i].va == va) return k_overrides[i].fn;
+        if (k_overrides[i].va == va && k_overrides[i].entry_rva == g_nfs_exe->entry_rva)
+            return k_overrides[i].fn;
     return 0;
 }
 

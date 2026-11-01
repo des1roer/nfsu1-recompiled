@@ -8,10 +8,9 @@ std::array<uint8_t,8> inputMouseButtons{};
 int32_t inputMouseX{},inputMouseY{},inputMouseZ{};
 // Touch as an ABSOLUTE pointer through Speed.exe's relative DirectInput mouse:
 // the game adds each GetDeviceState delta to its cursor in its mouse object
-// (0x706498: +4 x, +8 y, window pixels, clamped to the client rect), so the
+// (1.4: 0x706498, see exe_layout.c: +4 x, +8 y, window pixels, clamped to the client rect), so the
 // delta handed out is "finger minus current cursor". Button changes are queued
 // and handed out one poll after the cursor reached the finger.
-constexpr uint32_t gameMouse=0x706498;
 bool touchMoved=false;std::deque<uint8_t> touchButtons;int64_t touchSettleMs=0;
 // The game reads the mouse several times per frame from different places, and
 // the front end looks at the button edge once per frame: hold every change.
@@ -400,7 +399,7 @@ void inputDispatch(){
                 // the finger at any render size).
                 float half=nfs_widescreen_hud_pos_x();
                 std::pair<int32_t,int32_t> point={int32_t(lroundf(guestPointerX.load()*2.f*half)),std::min(int32_t(guestPointerY.load()*480.f),479)};
-                inputMouseX=point.first-int32_t(read32(gameMouse+4));inputMouseY=point.second-int32_t(read32(gameMouse+8));}
+                const uint32_t gameMouse=g_nfs_exe->game_mouse;inputMouseX=point.first-int32_t(read32(gameMouse+4));inputMouseY=point.second-int32_t(read32(gameMouse+8));}
             else if(!touchButtons.empty()&&steadyMs()-touchSettleMs>=touchHoldMs){inputMouseButtons[0]=touchButtons.front();touchButtons.pop_front();touchSettleMs=steadyMs();}
         }
         for(auto item:object.format){uint32_t index=(item.type>>8)&0xffff,category=item.type&0xff;

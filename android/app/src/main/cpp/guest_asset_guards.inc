@@ -16,13 +16,14 @@ void validateResourceChunks(uint32_t data,uint32_t bytes){
     }
 }
 void validateLanguageTable(){
-    uint32_t count=read32(0x73442c),table=read32(0x734434);
+    uint32_t count=read32(g_nfs_exe->language_count),table=read32(g_nfs_exe->language_table);
     if(!count||!table||!memory->readable(table,uint64_t(count)*8))
         throw GuestStop("Tabla de idioma vacia o invalida: revisa LANGUAGES y selecciona un idioma disponible de tu copia de NFS Underground 1");
 }
 void testGuestAssetGuards(){
     State original;original.save();uint32_t data=allocate(64);
-    uint32_t oldCount=read32(0x73442c),oldTable=read32(0x734434);
+    const uint32_t countVa=g_nfs_exe->language_count,tableVa=g_nfs_exe->language_table,lookup=g_nfs_exe->language_lookup;
+    uint32_t oldCount=read32(countVa),oldTable=read32(tableVa);
     auto require=[](bool ok){if(!ok)throw GuestStop("Asset guard regression failed");};
     try{
         write32(data,1);write32(data+4,8);write32(data+16,2);write32(data+20,0);
@@ -33,20 +34,20 @@ void testGuestAssetGuards(){
         }
         write32(data+4,UINT32_MAX);bool stopped=false;
         try{validateResourceChunks(data,24);}catch(const GuestStop&){stopped=true;}require(stopped);
-        write32(0x73442c,0);write32(0x734434,0);stopped=false;
-        try{callGuest(0x0059fb80u,{});}catch(const GuestStop&){stopped=true;}require(stopped);original.load();
+        write32(countVa,0);write32(tableVa,0);stopped=false;
+        try{callGuest(lookup,{});}catch(const GuestStop&){stopped=true;}require(stopped);original.load();
         // Exercise the original search through the manual dispatch and guest
         // calling convention, for present and absent keys in a valid table.
         write32(data,10);write32(data+4,data+32);write32(data+8,20);write32(data+12,data+40);
-        write32(0x73442c,2);write32(0x734434,data);
+        write32(countVa,2);write32(tableVa,data);
         for(auto item:std::array<std::pair<uint32_t,uint32_t>,3>{{{10,data+32},{20,data+40},{15,0}}}){
-            g_edx=item.first;require(callGuest(0x0059fb80u,{})==item.second);
+            g_edx=item.first;require(callGuest(lookup,{})==item.second);
         }
-        write32(0x73442c,oldCount);write32(0x734434,oldTable);
+        write32(countVa,oldCount);write32(tableVa,oldTable);
         heaps->free(GuestHeaps::process,data);original.load();
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Asset guards passed: chunk bounds, truncated headers, overflow, empty language table and original lookup ABI");
     }catch(...){
-        write32(0x73442c,oldCount);write32(0x734434,oldTable);
+        write32(countVa,oldCount);write32(tableVa,oldTable);
         heaps->free(GuestHeaps::process,data);original.load();throw;
     }
 }

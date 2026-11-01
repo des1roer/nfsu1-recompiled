@@ -128,14 +128,30 @@ def rebuild(md, img, base, fd):
     return f
 
 
-def read_va_list(path):
+# Speed.exe builds by PE entry point (src/runtime/exe_layout.c has the host's side).
+EXE_BUILDS = {0x270CB5: "1.4", 0x270515: "2005"}
+
+
+def exe_build(info):
+    return EXE_BUILDS.get(info.entry_point_rva)
+
+
+def read_va_list(path, build=None):
+    """VA -> reason. A reason starting with @<build> (@1.4, @2005) is that
+    build's address only: unrelated code in another exe, so it is skipped
+    unless `build` matches."""
     out = {}
     if path and os.path.exists(path):
         for line in open(path):
             line = line.split("#", 1)[0].strip()
             if line:
                 parts = line.split(None, 1)
-                out[int(parts[0], 16)] = parts[1] if len(parts) > 1 else ""
+                reason = parts[1] if len(parts) > 1 else ""
+                if reason.startswith("@"):
+                    tag, _, reason = reason.partition(" ")
+                    if tag[1:] != build:
+                        continue
+                out[int(parts[0], 16)] = reason.strip()
     return out
 
 
@@ -155,9 +171,11 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
     if names_path and os.path.exists(names_path):
         names = {int(k, 16): v for k, v in json.load(open(names_path)).items()}
     cfg = os.path.join(HERE, "..", "config")
-    overrides = read_va_list(os.path.join(cfg, "overrides.txt"))
-    excluded = read_va_list(os.path.join(cfg, "exclude.txt"))
-    hooks = read_va_list(os.path.join(cfg, "hooks.txt"))
+    build = exe_build(info)
+    print(f"[*] {module}: Speed.exe build {build or 'unknown (build-tagged entries skipped)'}")
+    overrides = read_va_list(os.path.join(cfg, "overrides.txt"), build)
+    excluded = read_va_list(os.path.join(cfg, "exclude.txt"), build)
+    hooks = read_va_list(os.path.join(cfg, "hooks.txt"), build)
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     md.detail = True
     lifter = Lifter(iat_map=iat, func_names={}, lifted=lifted, precise_carry=True,

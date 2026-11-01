@@ -4,8 +4,8 @@
 
 Ship a personal Android build that already contains the PC game data (no manual
 copy to `/storage/emulated/0/nfsu1` by the player), built from a user-owned copy
-of the game that had the **Universal Widescreen Patcher** (`uniws.exe`) applied
-to `Speed.exe`. Output: `build/NFSU1-embedded.apk`.
+of the game whose `Speed.exe` is **not 1.4** but a 2005 build (section 3).
+Output: `build/NFSU1-embedded.apk`.
 
 ## 1. Bundling game data into the APK
 
@@ -74,131 +74,88 @@ licenses pre-accepted). Point Gradle at it via `android/local.properties`
 `android/gradlew.bat assembleDebug` (no release signing config exists in this
 project, debug is fine for sideloading).
 
-## 3. The mechanism: accepting a patched Speed.exe
+## 3. Supporting a second Speed.exe build
 
-### The problem
+### What the exe actually is (corrected)
 
-Every address in this project (hook sites, overrides, the ABK call table) is
-pinned to one documented binary: Speed.exe 1.4, SHA-256
-`c0fad450…c074b7` (image base `0x400000`, size of image `0x394368`, entry
-point `0x270CB5`, file size 3,178,496). A third-party patcher that changes
-even a few bytes can shift everything after the change point. NFSU2's
-`memory.md` (https://github.com/des1roer/nfsu2-recompiled/blob/main/memory.md)
-documents the general pattern for this (`NFSU2_EXE_BUILD`, per-build
-`config/hooks-<tag>.txt`, `#if defined(NFSU2_EXE_<TAG>)` in `widescreen.c`).
-NFSU1 did **not** have this per-build infrastructure yet; this session dealt
-with one specific build ad hoc instead of building the full generalized
-mechanism (see "What wasn't done" below for why, and what porting the
-real mechanism here would take).
+The first version of this file called it "Speed.exe 1.4 patched by the
+Universal Widescreen Patcher". That was wrong, and it is why the first APK
+stopped at boot with `Arranque guest detenido: No guest function at
+0x0059fb80`:
 
-The exe actually used: same `Speed.exe` patched by the **Universal Widescreen
-Patcher** (`uniws.exe`, identified by `patches.ini`/`speed.undo` alongside
-it). Measured: file size 3,183,036; image base unchanged `0x400000`; size of
-image `0x39B5BC`; entry point `0x270515` (1952 bytes earlier than the
-original — the patcher's init stub runs before jumping to the real entry).
+- PE timestamp 2005-11-24, `Nov 18 2005` in its strings, entry `0x270515`,
+  3,183,036 bytes, SHA-256 `1b232d7a…f83ebbf6`. Speed.exe 1.4 is entry
+  `0x270CB5`, 3,178,496 bytes, SHA-256 `c0fad450…c074b7`.
+- `uniws.exe`'s only NFSU patch is the 640x480 immediates
+  (`B8 80 02 00 00 BE E0 01 00 00`, `patches.ini`); this exe still has them at
+  `0x4088A5`, and `speed.undo` lists 640/480 too. So the patch is not applied.
+- It is a separate compile ("cracked SPEED.EXE" per uniws' notes): functions
+  and globals move by different, non-uniform amounts (`-0x5B0`, `+0xE0`,
+  `+0x110`, `+0x560`, `+0x558`...), and some calling conventions changed (the
+  resource walker takes its buffer in `ecx`/`eax` here, on the stack in 1.4).
+  **Never extrapolate an address by a delta.**
 
-### What was fixed, and how each address was verified (not guessed)
+The lifted C is fine either way (it is generated from whatever exe is
+lifted). What broke was the **host runtime's own references into the guest**:
+1.4 constants for functions it calls, globals it reads/writes, and hook sites.
 
-1. **PE image validation** (`android/app/src/main/cpp/game_data.h`,
-   `guest_runtime.cpp`'s `loadImage()`): checks `imageBase` and
-   `AddressOfEntryPoint` against an allow-list of **two** known entry points
-   (`0x270CB5` original, `0x270515` uniws-patched) instead of one. `imageSize`
-   is no longer compared at all — same fix as NFSU2's `loadImage()` ("No-CD
-   builds can report an unaligned SizeOfImage; map every section in full"):
-   it's recomputed from the actual section table
-   (`max(VirtualAddress + max(VirtualSize, SizeOfRawData))`, page-rounded)
-   instead of trusting the PE header's declared value.
+### The mechanism
 
-2. **`config/overrides.txt` / `src/runtime/overrides.c`** (functions where
-   normal auto-lift is known-wrong): of the 3 documented overrides, only the
-   Cyrix probe's address needed fixing. Found by an **exact 19-byte signature
-   search** (`33 C0 9E B8 05 00 00 00 BB 02 00 00 00 F6 F3 9F 80 FC 02` =
-   `xor eax,eax; sahf; mov eax,5; mov ebx,2; div bl; lahf; cmp ah,2`, the
-   literal sequence documented in `overrides.c`'s comment) over the patched
-   exe's raw bytes — single unique hit at `0x006432AA`; the function itself
-   starts one byte earlier at `0x006432A9` (`push ebx`, confirmed by checking
-   that a `ret` immediately precedes it). Added as an **additional** entry in
-   both files (not a replacement) — the original address still matches a
-   genuine, unpatched build, so both builds work from the same tables. The
-   two CRT `memcpy`/`memmove` overrides (`0x00672630`, `0x00678D30`) were
-   **left unfixed**: no reliable byte signature was available (no original
-   exe to diff against, and the structural description alone isn't safely
-   searchable), and the generated code has zero `/* unresolved */` markers
-   (`grep` for pcrecomp's exact unresolved-ICALL/ITAIL comment text) — the
-   literal symptom the override exists to prevent is absent in this build,
-   so leaving the normal auto-lift in place is likely correct, and a wrong
-   guess here would silently replace some *other*, correctly-lifted
-   function.
+- `src/runtime/nfs_exe_layout.h` + `exe_layout.c`: one table row per build
+  (picked by entry point in `loadImage()`, `nfs_exe_select`), with every guest
+  address the host uses: touch mouse object, game HWND, back buffer size,
+  options/profile save, language table search, resource walker (+ its ABI),
+  cursor-clamp hook site, and whether 1.4's widescreen hooks apply. A 0 field
+  turns that host feature off for the build. `loadImage()` also refuses an exe
+  whose entry is not a lifted function (lifted code from another exe).
+- Users: `guest_asset_guards.inc`, `nfs_validate_asset_entry`,
+  `saveChangedOptions`, `clientRect`/`pointerInWindow`, the touch mouse
+  delta in `guest_input.inc`, `recomp_hook`/minimap in `widescreen.c`,
+  `overrides.c` (each override is tagged with its build's entry point).
+  `arm64_guest.h`'s `RECOMP_ENTER` lists both builds' guarded functions as
+  constants, so it still folds away in every other function.
+- `config/hooks.txt`, `config/overrides.txt`: `@1.4` / `@2005` after the VA.
+  `scripts/run_lift.py` detects the build (`EXE_BUILDS`) and lifts only that
+  build's entries; at another build's address they are unrelated code.
 
-3. **`scripts/abk_module.py`** (sound-bank code generation, required by
-   `android/app/src/main/cpp/CMakeLists.txt`'s `FATAL_ERROR` if
-   `gen_abk/abk_*.c` is missing): same image-base/entry-point relaxation as
-   #1. Its `CALL_TABLE = 0x6E9AE8` (Speed.exe's AEMS function-pointer table)
-   was checked **directly**, not assumed: dumped 24 consecutive dwords at
-   that address in the patched exe and confirmed all 24 fall in the valid
-   code range `[0x401000, 0x697000)` with a clean incrementing pattern —
-   the table did **not** move. Ran `abk_module.py` against it: 23 distinct
-   code blocks (matches the documented "106 banks hold only 23 distinct
-   blocks" exactly), 0 range-check failures on any resolved call target.
+### 2005 build addresses (each found by its code, see `exe_layout.c`)
 
-   A `+0x2E8` shift was found for two *data* globals (`fHudScaleX`/`fHudPosX`
-   anchor, originally `0x6CC914`/`0x6CC910`) via `scripts/widescreen_sites.py`
-   pattern search — **do not** assume this delta applies anywhere else. It
-   turned out not to apply to `CALL_TABLE` at all (verified above). The most
-   likely explanation: uniws.exe rewrites a handful of *specific*
-   instructions in place (including these two to point at its own new
-   globals) rather than uniformly relocating the whole data section — each
-   address needs independent verification, not delta extrapolation.
+| what | 1.4 | 2005 | how it was identified |
+|---|---|---|---|
+| language search | `0x59FB80` | `0x59F5D0` | count-1 binary search over {key,value}, key in edx |
+| its count/table | `0x73442C`/`0x734434` | `0x73498C`/`0x734994` | read by that search |
+| resource walker | `0x447C00` (stack 2,3) | `0x447E60` (ecx, eax) | walks `+[x+4]+8`, handler table on the stack |
+| profile save | `0x41C7A0` | `0x41C880` | tests profile name, calls the .opt writer |
+| .opt writer / options | `0x41E200` / `0x7588C4` | `0x41E2D0` / `0x758E14` | serializes 0x2E5 bytes of it |
+| profile name | `0x736230` | `0x736788` | byte tested by the profile save |
+| game HWND | `0x736380` | `0x7368D8` | CreateWindowExA result, used by the clamp |
+| back buffer | `0x71A96C` | `0x71AECC` | resolution setter `0x4087C0` |
+| mouse object | `0x706498` | `0x7069F8` | pushed for the mouse read `0x4131F0` |
+| cursor clamp hook | `0x4131B5` | `0x4132D5` | after GetClientRect in `0x4132C0` |
+| CRT memmove | `0x672630`, `0x678D30` | `0x671E80`, `0x678580` | same bytes as SPEED2 `0x75CFD0` except jump tables |
+| Cyrix probe | `0x643A39` | `0x6432A9` | 19-byte signature |
+| minimap hooks | `0x590DDF`... | `0x59083F`, `0x58F57C`, `0x58E012` | same opcodes |
 
-### What wasn't done (and why)
+`scripts/abk_module.py`'s `CALL_TABLE = 0x6E9AE8` was checked directly and
+did not move (24 code pointers, 23 distinct blocks, as in 1.4).
 
-- **`config/hooks.txt`** (~55 widescreen/touch hook sites,
-  `src/runtime/widescreen.c`'s `recomp_hook()`) was **not** ported to this
-  build. Running `scripts/widescreen_sites.py` against the patched exe found:
-  the `mirror` pattern (rear-view mirror quad) — 0 hits; the three `neg 320`
-  patterns, which should cover ~30-40 "mouse hit test" sites per
-  `hooks.txt` — only 5 hits total. Most likely cause: the widescreen patcher
-  targets exactly this kind of hardcoded-320 code, so ThirteenAG's byte
-  signatures (tuned for the unpatched 1.4 build) don't match what's there
-  now. Properly supporting this would need NFSU2's full mechanism (a
-  `config/hooks-<tag>.txt` + `#if defined(NFSU1_EXE_<TAG>)` table in
-  `widescreen.c`, picked by an env var read at both lift time in
-  `run_lift.py` and compile time in both `CMakeLists.txt` files — see the
-  referenced NFSU2 `memory.md` for the exact shape), and each of the ~55
-  sites would need the same kind of careful, individually-verified relocation
-  as the Cyrix probe above — not finished.
-- **Mitigation in place**: `recomp_hook()` has
-  `if (s_display_aspect <= 0.0f) return;` **before** the `k_hit[]` loop and
-  the `switch`. As long as the launcher's widescreen option is left off,
-  `s_display_aspect` stays 0 and every hook call for an unmapped/wrong
-  address returns immediately — it never reaches the `switch`'s `default:`
-  fatal-crash branch. **Do not enable native widescreen in the launcher on
-  this build** until `hooks.txt` is properly redone for this exe.
-- The initial `unimplemented_total: 3075` (`2990` of them `3dnow`) in the
-  main lift's stats was investigated and is **not** believed to be a sign of
-  a broken lift: the generated C around those sites
-  (`src/recomp/gen/recomp_0032.c`) shows coherent, correctly-structured
-  MMX/3DNow vector code (`movq`, `pxor` lifted normally, interleaved with
-  `RECOMP_UNIMPL` only for the 3DNow-specific opcodes) — consistent with a
-  CPU-dispatch codepath (AMD 3DNow optimization branch) that real hardware
-  today never selects, so these `RECOMP_UNIMPL` traps are plausibly dead code
-  in practice. No reference lift of the genuine unpatched 1.4 exists in this
-  checkout to confirm the exact number is "normal," though.
+### Not supported on the 2005 build
 
-### Build result
+- Native widescreen (render size, FOV, HUD, the 30 front-end hit tests): its
+  ~55 sites are 1.4's only. The launcher option is ignored for this build
+  (logged "Widescreen unavailable for ..."); the game stays 4:3.
+- `src/runtime/nfs_runtime.c` (Windows desktop host only) still names 1.4's
+  timer list in its crash report; the desktop host stays 1.4-only.
 
-`android/gradlew.bat assembleDebug` succeeded (8m47s) after the above fixes
-and the one-time lift pipeline run. Output copied to
-`build/NFSU1-embedded.apk` (~1.42 GB). **Not tested on an actual device** —
-only the exe-specific pieces above (Cyrix probe, ABK table) were verified by
-direct inspection of bytes/addresses, not by running the game.
+### Rebuilding after a change to hooks/overrides
+
+Only the main lift needs re-running (`run_lift.py lift ...`, ~2 min); the
+catalog does not depend on hooks/overrides. Then `android/gradlew.bat
+assembleDebug` (run it as `./gradlew.bat` from `android/` in Git Bash).
 
 ## Rule for anything going further
 
-If you add proper multi-build support for `hooks.txt` later (porting NFSU2's
-`NFSU2_EXE_BUILD` mechanism as `NFSU1_EXE_BUILD`), keep it additive: this
-session's two extra entries (the image-check allow-list, the second Cyrix
-override) never replaced the original build's values, only added alongside
-them, so a genuine unpatched Speed.exe 1.4 still works unmodified. Follow the
-same pattern for any future addition — never make the *documented* build's
-support conditional on these changes.
+Additive and verified: a new build gets its own row in `exe_layout.c` and
+`@tag` entries in `config/`, every address found by its code (signature,
+callers, the globals it touches), never by an offset from another build.
+Speed.exe 1.4's values never change.
