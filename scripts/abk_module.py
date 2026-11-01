@@ -34,7 +34,11 @@ TEXT_RVA = 0x1000
 def speed_image(root):
     import pefile
     pe = pefile.PE(os.path.join(root, "Speed.exe"), fast_load=True)
-    if pe.OPTIONAL_HEADER.SizeOfImage != 0x394368 or pe.OPTIONAL_HEADER.AddressOfEntryPoint != 0x270CB5:
+    # Speed.exe 1.4, or the same build patched by the Universal Widescreen Patcher
+    # (accepted at the user's risk; its own code/data is untouched by that patch, only
+    # CALL_TABLE below is actually read, and every table() lookup is range-checked).
+    entry = pe.OPTIONAL_HEADER.AddressOfEntryPoint
+    if pe.OPTIONAL_HEADER.ImageBase != 0x400000 or (entry != 0x270CB5 and entry != 0x270515):
         sys.exit("abk_module: Speed.exe is not the 1.4 build this port targets")
     return pe.get_memory_mapped_image()
 

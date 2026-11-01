@@ -51,7 +51,7 @@ public final class LauncherActivity extends Activity {
     private LinearLayout checksList, optionsList;
     private TextView status;
     private Button play, access;
-    private boolean playAfterProbe, checkingUpdates, resumed;
+    private boolean playAfterProbe, checkingUpdates, resumed, installing;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
 
@@ -91,7 +91,7 @@ public final class LauncherActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        refresh();
+        maybeInstallGameData();
         String crash = Diagnostics.unreportedCrash(this);
         if (crash != null) {
             Diagnostics.acknowledgeCrashes(this);
@@ -486,7 +486,26 @@ public final class LauncherActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(code, permissions, results);
-        refresh();
+        maybeInstallGameData();
+    }
+
+    /** Stages the bundled game data (assets/nfsu1) to gameRoot() once per app version, then refresh(). */
+    private void maybeInstallGameData() {
+        if (installing) return;
+        if (!allowed() || !GameDataInstaller.needsInstall(this)) { refresh(); return; }
+        installing = true;
+        play.setEnabled(false);
+        access.setVisibility(View.GONE);
+        status.setText("Instalando archivos del juego…");
+        worker.execute(() -> {
+            try {
+                GameDataInstaller.install(this, percent -> main.post(() ->
+                        status.setText("Instalando archivos del juego… " + percent + "%")));
+                main.post(() -> { installing = false; refresh(); });
+            } catch (Exception error) {
+                main.post(() -> { installing = false; refresh(); message("Archivos del juego", "No se pudieron instalar: " + error.getMessage()); });
+            }
+        });
     }
 
     @Override protected void onDestroy() {

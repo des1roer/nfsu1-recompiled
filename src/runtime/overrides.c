@@ -41,6 +41,9 @@ static const struct { uint32_t va; nfs_override_fn fn; } k_overrides[] = {
     { 0x00643A39u, ov_is_cyrix },
     { 0x00672630u, ov_crt_memmove },
     { 0x00678D30u, ov_crt_memmove },
+    /* Same probe, shifted address: the Universal Widescreen Patcher-modified Speed.exe
+     * used for the embedded-data Android build (see config/overrides.txt). */
+    { 0x006432A9u, ov_is_cyrix },
 };
 
 nfs_override_fn nfs_override_lookup(uint32_t va) {

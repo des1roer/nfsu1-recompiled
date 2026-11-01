@@ -15,7 +15,7 @@ install the architecture supported by your device. Original game data is require
 Audio, pacing and validation details: [runtime follow-up](docs/AUDIO_FRAME_PACING.md).
 Issue-driven changes and remaining limits: [16 October review](docs/ISSUE_REVIEW_2026_10_16.md).
 
-**[English](#english) · [Español](#español)**
+**[English](#english) · [Español](#español) · [Русский](#русский)**
 
 ---
 
@@ -129,3 +129,59 @@ El host busca `Speed.exe` en una carpeta `Need for Speed Underground` junto a é
 - El proyecto **NFSU2 Recompiled**, cuyo runtime y herramientas se reutilizan aquí.
 
 Need for Speed y Underground son marcas de Electronic Arts. Este es un proyecto de preservación no oficial y sin fines comerciales.
+
+---
+
+## Русский
+
+**Статическая рекомпиляция** *Need for Speed Underground* (2003, патч 1.4 для PC, `Speed.exe`) в нативный код, построенная на той же цепочке инструментов, что уже запускает **[Need for Speed Underground 2 Recompiled](https://github.com/codepdbh/nfsu2-recompiled)** нативно на Windows и на Android ARM64.
+
+Исполняемый файл x86 переводится функция за функцией в C с помощью пропатченного [pcrecomp](https://github.com/sp00nznet/pcrecomp) (lift32), а затем компилируется под целевую платформу. **Без эмулятора, без Wine, без JIT**: логика самой игры выполняется как нативный код, а графика идёт через Direct3D 9 (DXVK поверх Vulkan на Android).
+
+> **Нужна собственная копия игры.** Этот репозиторий **не содержит файлов игры и кода, сгенерированного из неё**. Всё, что получено из `Speed.exe`, собирается локально из вашей установки и никогда не коммитится.
+
+### Цели
+
+- **Windows** (x86) как нативная платформа для проверки.
+- APK для **Android ARM64 и ARMv7** с launcher'ом, сенсорным управлением, поддержкой геймпада, масштабированием разрешения, ограничителем FPS и нативным широкоформатным режимом — как в порте NFSU2.
+- **Общая база** для будущих портов без смешивания разных путей рекомпиляции (x86 здесь, PowerPC/Xbox 360 для Most Wanted).
+
+### Статус
+
+| Этап | Состояние |
+|---|---|
+| Анализ исполняемого файла (`Speed.exe` 1.4, SHA-256 `c0fad450…c074b7`) | ✅ Direct3D 9, 254 импорта (87 % общие с NFSU2), без RTTI, без релокаций |
+| Каталог функций | ✅ 22 751 функция; семена из выровненных указателей на данные и 191 vtable |
+| Перевод в C | ✅ 0 ошибок трансляции, 3 написанных вручную замены (определение CPU, memmove из CRT) |
+| Windows-хост: сборка и линковка | ✅ |
+| Код звуковых банков (x86-процедуры внутри `.abk`-банков EA) | ✅ 23 отдельных блока оттранслированы заранее, распознаются по содержимому во время выполнения |
+| Windows-хост: запуск | ✅ вступительные ролики, главное меню, загрузка профиля, видео сюжетного режима |
+| Первый кадр, меню, гонки | 🔧 меню доступны; гонки пока не проверялись |
+| Android APK | 🔧 arm64-сборка устанавливается и доходит до меню |
+| Широкоформатный режим | ⏳ |
+
+### Структура
+
+```
+config/     переопределения, исключённые записи и точки хуков для Speed.exe
+docs/       разбор того, что общее с проектом NFSU2, заметки по анализу
+scripts/    драйвер трансляции, генерация семян (vtables, выровненные указатели на данные)
+src/        Windows-хост, рантайм, шимы Win32, логирование
+work/       (только локально) копия Speed.exe для анализа, каталог, семена
+src/recomp/gen/  (только локально) сгенерированный C
+src/recomp/gen_abk/  (только локально) сгенерированный C для процедур звуковых банков
+```
+
+### Сборка (Windows)
+
+Требования: Visual Studio (MSVC x86), Python 3 с `capstone` и `pefile`, а также чекаут пропатченного `pcrecomp` рядом с этой папкой (патчи — в репозитории NFSU2, `patches/pcrecomp`). Команды те же, что и в английском разделе.
+
+Хост ищет `Speed.exe` в папке `Need for Speed Underground` рядом с собой (или путь можно передать через `--game-root`).
+
+### Благодарности
+
+- **[pcrecomp](https://github.com/sp00nznet/pcrecomp)** — статический рекомпилятор, на котором построен этот проект.
+- **DXVK** — Direct3D 9 поверх Vulkan (Android).
+- Проект **NFSU2 Recompiled**, чьи рантайм и инструменты здесь переиспользуются.
+
+Need for Speed и Underground — товарные знаки Electronic Arts. Это неофициальный некоммерческий проект по сохранению игры.

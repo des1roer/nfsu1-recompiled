@@ -522,8 +522,21 @@ void loadImage(const char* path) {
         nt.FileHeader.SizeOfOptionalHeader<sizeof(pe_opt_header32)) throw GuestStop("Expected x86 PE32");
     auto opt=nt.OptionalHeader; imageBase=opt.ImageBase; imageSize=opt.SizeOfImage;
     resourceRva=opt.DataDirectory[2].VirtualAddress;resourceSize=opt.DataDirectory[2].Size;
-    if (imageBase!=0x400000 || imageSize!=0x394368 || opt.AddressOfEntryPoint!=0x270cb5)  // Speed.exe 1.4
+    // Speed.exe 1.4, or the same build patched by the Universal Widescreen Patcher (accepted at
+    // the user's risk: its entry point moves, so hardcoded absolute VAs elsewhere in this file
+    // may resolve to the wrong data if sections shifted relative to the original).
+    if (imageBase!=0x400000 || (opt.AddressOfEntryPoint!=0x270cb5 && opt.AddressOfEntryPoint!=0x270515))
         throw GuestStop("PE layout does not match generated NFSU1 code");
+    // Patched builds can report an unaligned/short SizeOfImage; map every section in full
+    // (same approach as the NFSU2 port's loadImage, for the same no-CD/patched-exe reason).
+    {
+        uint64_t sectionsAt=uint64_t(dos.e_lfanew)+24+nt.FileHeader.SizeOfOptionalHeader;
+        for (uint32_t i=0;i<nt.FileHeader.NumberOfSections;++i) {
+            auto sec=fileStruct<pe_section_header>(file,sectionsAt+i*sizeof(pe_section_header));
+            imageSize=std::max(imageSize,sec.VirtualAddress+std::max(sec.VirtualSize,sec.SizeOfRawData));
+        }
+        imageSize=(imageSize+0xfffu)&~0xfffu;
+    }
     memory->commit(imageBase,imageSize);
     imageRange(0,opt.SizeOfHeaders);
     if (opt.SizeOfHeaders>file.size()) throw GuestStop("Truncated PE headers");

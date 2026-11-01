@@ -1,7 +1,6 @@
 #pragma once
 #include <cstdio>
 #include <dirent.h>
-#include <sys/stat.h>
 #include <string>
 #include <stdexcept>
 #include <android/log.h>
@@ -14,10 +13,11 @@ inline void checkGameData() {
     unsigned char magic[2]{};
     const size_t read = std::fread(magic, 1, 2, exe);
     std::fclose(exe);
-    struct stat info{};
-    if (read != 2 || magic[0] != 'M' || magic[1] != 'Z' ||
-        stat((root + "/Speed.exe").c_str(), &info) || info.st_size != 3178496)  // Speed.exe 1.4
-        throw std::runtime_error("Speed.exe does not match expected image size/header");
+    // Only the PE header here; the exact image layout (and which builds of Speed.exe are
+    // accepted, including the Universal Widescreen Patcher variant) is checked in
+    // guest_runtime.cpp's loadImage(), same as the NFSU2 port's game_data.h/loadImage split.
+    if (read != 2 || magic[0] != 'M' || magic[1] != 'Z')
+        throw std::runtime_error("Speed.exe does not have a PE header");
     // NFSU1's data folders (the storage is case-insensitive: Cars, FrontEnd, Global...).
     for (const char* name : {"CARS", "FRONTEND", "GLOBAL", "LANGUAGES", "MOVIES", "SOUND", "TRACKS"}) {
         const auto path = root + "/" + name;

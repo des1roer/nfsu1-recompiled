@@ -4,3 +4,4 @@
 0x00643A39  Cyrix probe (sahf/div/lahf): DIV flags are undefined and not modelled (same bytes as SPEED2 0x6F5FC5)
 0x00672630  CRT memcpy/memmove: computed jumps into unrolled blocks are not all lifted entries (same bytes as SPEED2 0x75CFD0)
 0x00678D30  CRT memcpy/memmove, second copy (same bytes)
+0x006432A9  Cyrix probe, same bytes/shape as 0x00643A39: shifted address in the Universal Widescreen Patcher-modified Speed.exe used for the embedded-data Android build
