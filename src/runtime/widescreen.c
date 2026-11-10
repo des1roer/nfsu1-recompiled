@@ -128,7 +128,7 @@ static const char k_minimap_template[] =
     "# Одна строка: DX DY в единицах HUD игры (640x480). DX > 0 вправо, DY < 0 вверх.\n"
     "# 0 0 = original position / исходное положение. Example / пример: 0 -300\n"
     "# Close the game fully and start it again to apply / Перезапустите игру.\n"
-    "0 0\n";
+    "0 -50\n";
 void nfs_minimap_config(const char *game_root) {
     char path[1024], line[256];
     const char *dx_env = getenv("NFSU1_MINIMAP_RELOCATE_DX"), *dy_env = getenv("NFSU1_MINIMAP_RELOCATE_DY");

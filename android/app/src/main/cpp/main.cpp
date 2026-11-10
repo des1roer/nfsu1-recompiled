@@ -329,6 +329,9 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     const char* value=env->GetStringUTFChars(language,nullptr);if(!value)return;
     setGuestLanguage(value);env->ReleaseStringUTFChars(language,value);
 }
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeActivateCheat(JNIEnv* env,jclass,jstring code){
+    const char* text=env->GetStringUTFChars(code,nullptr);queueGuestCheat(text?text:"");env->ReleaseStringUTFChars(code,text);
+}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeResolution(JNIEnv*,jclass,jint width,jint height){setGuestResolution(unsigned(width),unsigned(height));}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeFrameLimit(JNIEnv*,jclass,jint cap){setGuestFrameLimit(unsigned(cap));}
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeGamepadConnected(JNIEnv*,jclass,jboolean connected){setGuestPadConnected(connected==JNI_TRUE);}
@@ -341,6 +344,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nat
     gamepadDevices=std::move(devices);
 }
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeWidescreen(JNIEnv*,jclass,jboolean enabled){setGuestWidescreen(enabled==JNI_TRUE);}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativePillarbox(JNIEnv*,jclass,jboolean enabled){setGuestPillarbox(enabled==JNI_TRUE);}
 // Minimap at the top-left: the bottom-left corner sits under the steering thumb.
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu1_androidevolved_GameActivity_nativeOnlineServer(JNIEnv* env,jclass,jstring host){
     const char* text=env->GetStringUTFChars(host,nullptr);setGuestOnlineServer(text?text:"");env->ReleaseStringUTFChars(host,text);
@@ -384,8 +388,34 @@ static void configurePipelineCache(android_app* app){
     setenv("DXVK_STATE_CACHE","1",1);
     __android_log_print(ANDROID_LOG_INFO,"NFSU1","DXVK persistent pipeline state cache: %s",directory.c_str());
 }
+#ifdef NFS_PGO_GENERATE
+extern "C" void __llvm_profile_set_filename(const char*);
+extern "C" int __llvm_profile_write_file(void);
+// Instrumented build: counters are written when <external files>/pgo/dump
+// appears (adb shell touch ...), from this thread so the dump of the lifted
+// code (~1-2 s) never blocks the render thread. %m merges runs into one file.
+static void startProfileDumpWatch(android_app* app){
+    const char* files=app->activity->externalDataPath;if(!files||!*files)files=app->activity->internalDataPath;
+    auto directory=std::filesystem::path(files)/"pgo";std::error_code error;std::filesystem::create_directories(directory,error);
+    static std::string pattern=(directory/"default_%m.profraw").string(),flag=(directory/"dump").string();
+    __llvm_profile_set_filename(pattern.c_str());
+    __android_log_print(ANDROID_LOG_INFO,"NFSU1","PGO instrumented build: profile %s, trigger %s",pattern.c_str(),flag.c_str());
+    std::thread([]{
+        for(;;){
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            if(access(flag.c_str(),F_OK)!=0)continue;
+            unlink(flag.c_str());
+            int status=__llvm_profile_write_file();
+            __android_log_print(ANDROID_LOG_INFO,"NFSU1","PGO profile written: status %d",status);
+        }
+    }).detach();
+}
+#endif
 void android_main(android_app* app) {
     configurePipelineCache(app);
+#ifdef NFS_PGO_GENERATE
+    startProfileDumpWatch(app);
+#endif
     Host host; app->userData = &host; app->onAppCmd = onCommand;app->onInputEvent=onInput;
     try {
         testGuestMemory();

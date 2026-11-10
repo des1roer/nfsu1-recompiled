@@ -29,6 +29,7 @@
 #include <atomic>
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include <filesystem>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -104,42 +105,81 @@ std::unique_ptr<GuestHeaps> heaps;
 // ring too late, and the mixer replayed stale data ("the sound loops"). The
 // same starvation made the Windows build stutter until native32 got a ticket
 // lock. Here every unlock hands the machine to the longest waiter.
+//
+// (Ported from the NFSU2 port's event-driven scheduler.) unlock() hands the
+// machine straight to the longest-queued thread (no ticket window a newcomer
+// could barge into) and wakes only that thread -- a single shared condition
+// variable woke every waiter per handover. The render thread may jump the
+// queue, bounded: never past a thread already queued for 2 ms (less than half
+// an AAudio burst, so the mixer always gets its turn within a burst) and never
+// more than 3 times in a row.
+thread_local bool machinePriority=false;   // the thread that presents frames
 class MachineMutex {
+    struct Waiter{std::thread::id id;std::condition_variable cv;std::chrono::steady_clock::time_point since;bool priority;};
     std::mutex m_;
-    std::condition_variable cv_;
-    uint64_t next_=0,serving_=0;
-    std::thread::id owner_{};
-    unsigned depth_=0;
+    std::vector<Waiter*> waiters_;   // FIFO; a waiter lives on its thread's stack until served
+    std::atomic<std::thread::id> owner_{};   // atomic: queued threads spin on it before sleeping
+    unsigned depth_=0,priorityJumps_=0;
+    static constexpr std::chrono::milliseconds maxQueueBeforeFair{2};
+    static constexpr unsigned maxPriorityJumps=3;
+    // A queued thread spins this long before sleeping on its condition
+    // variable: a futex wake cost ~0.3 ms per handover on the NFSU2 port's
+    // test phone, most of the render thread's waiting.
+#if defined(NFS_GUEST_FAST)
+    static constexpr std::chrono::microseconds spinBeforeSleep{1500},prioritySpinBeforeSleep{4000};
+#else
+    static constexpr std::chrono::microseconds spinBeforeSleep{500},prioritySpinBeforeSleep{2000};   // portable build: less heat
+#endif
 public:
     void lock(){
         const auto me=std::this_thread::get_id();
         std::unique_lock<std::mutex> l(m_);
-        if(owner_==me){++depth_;return;}
-        const uint64_t ticket=next_++;
-        cv_.wait(l,[&]{return serving_==ticket;});
-        owner_=me;depth_=1;acquired=std::chrono::steady_clock::now();
+        if(owner_.load(std::memory_order_relaxed)==me){++depth_;return;}
+        auto queued=std::chrono::steady_clock::now();
+        if(owner_.load(std::memory_order_relaxed)==std::thread::id{}&&waiters_.empty()){owner_=me;depth_=1;acquired=queued;return;}
+        Waiter self{me,{},queued,machinePriority};
+        waiters_.push_back(&self);
+        l.unlock();
+        auto spinUntil=queued+(machinePriority?prioritySpinBeforeSleep:spinBeforeSleep);
+        // sched_yield per iteration (a bare yield instruction kept the core from
+        // the thread being waited for); the clock is read every 8 iterations.
+        for(unsigned spins=0;owner_.load(std::memory_order_acquire)!=me;){
+            if((++spins&7u)==0&&std::chrono::steady_clock::now()>=spinUntil)break;
+            sched_yield();
+        }
+        l.lock();
+        self.cv.wait(l,[&]{return owner_.load(std::memory_order_relaxed)==me;});   // unlock() removed us from the queue and handed over
+        depth_=1;acquired=std::chrono::steady_clock::now();
     }
     // When the current owner got the machine; only the owner reads it.
     std::chrono::steady_clock::time_point acquired{};
     bool try_lock(){
         const auto me=std::this_thread::get_id();
         std::lock_guard<std::mutex> l(m_);
-        if(owner_==me){++depth_;return true;}
-        if(next_!=serving_)return false;
-        ++next_;owner_=me;depth_=1;acquired=std::chrono::steady_clock::now();return true;
+        if(owner_.load(std::memory_order_relaxed)==me){++depth_;return true;}
+        if(owner_.load(std::memory_order_relaxed)!=std::thread::id{}||!waiters_.empty())return false;
+        owner_=me;depth_=1;acquired=std::chrono::steady_clock::now();return true;
     }
     bool hasWaiters(){
         std::lock_guard<std::mutex> lock(m_);
-        return next_>serving_+1; // the current owner already holds one ticket
+        return !waiters_.empty();
     }
     void unlock(){
-        {
-            std::lock_guard<std::mutex> l(m_);
-            if(--depth_)return;
-            owner_={};++serving_;
-            if(next_==serving_)return;          // nobody waiting
+        std::lock_guard<std::mutex> l(m_);
+        if(--depth_)return;
+        if(waiters_.empty()){owner_.store(std::thread::id{},std::memory_order_release);return;}
+        size_t pick=0;
+        for(size_t i=1;i<waiters_.size();++i)if(waiters_[i]->priority){pick=i;break;}
+        if(pick){
+            bool fair=std::chrono::steady_clock::now()-waiters_[0]->since>=maxQueueBeforeFair||priorityJumps_>=maxPriorityJumps;
+            if(fair)pick=0;else ++priorityJumps_;
         }
-        cv_.notify_all();
+        if(!pick)priorityJumps_=0;
+        Waiter* next=waiters_[pick];waiters_.erase(waiters_.begin()+ptrdiff_t(pick));
+        owner_.store(next->id,std::memory_order_release);
+        // Notified under m_: a spurious wakeup could otherwise see owner_==me,
+        // return and destroy the Waiter before notify_one touched it.
+        next->cv.notify_one();
     }
 };
 MachineMutex machine;
@@ -156,6 +196,8 @@ uint32_t lastImport{};
 std::string hostGameRoot;
 std::string guestLanguage="Spanish";
 bool guestWidescreen=true;
+bool guestPillarbox=false;          // launcher option
+std::atomic<bool> pillarboxActive{false};  // what the running game presents in
 std::atomic<bool> stopRequested{false};
 std::atomic<bool> guestPaused{false};
 std::chrono::steady_clock::time_point bootDeadline;
@@ -242,10 +284,67 @@ void checkGuestProgress() {
     if((++checkpoints&63u)==0){
         auto now=std::chrono::steady_clock::now();
         if(now>bootDeadline)throw GuestStop("CRT bring-up time budget reached at "+hex(g_cur_func));
-        auto slice=renderThread?std::chrono::microseconds(3000):std::chrono::microseconds(500);
+        // With spinning handovers (MachineMutex) a slice costs the render
+        // thread only the other thread's hold time, so it yields almost as
+        // soon as somebody queues: 3 ms slices left waiters asleep past their
+        // spin budget and each handover cost a futex wake (NFSU2 port).
+        auto slice=renderThread?std::chrono::microseconds(300):std::chrono::microseconds(500);
         if(now-machine.acquired>=slice){if(machine.hasWaiters())yieldGuestMachine();}
     }
     if(!guestThreadFault.empty())throw GuestStop(guestThreadFault);
+}
+// Event-driven guest waits (ported from the NFSU2 port). Guest wait objects
+// (events, mutexes, threads, timers, critical sections, window messages)
+// change only under the machine lock or messageMutex. A blocked thread
+// registers the objects it waits on, releases the machine and sleeps until one
+// of them is signaled or its deadline passes, instead of re-queuing for the
+// machine every millisecond: each polling thread was a handover the render
+// thread had to wait for. Signals are per object; nullptr wakes every blocked
+// thread (stop, pause, TerminateThread). Registration precedes the readiness
+// check, so a signal from a host thread (window messages) between the check
+// and the sleep is still seen. The 50 ms cap turns a forgotten signaler into
+// slow polling rather than a hang.
+struct SyncWaiter{const void* const* keys;size_t count;bool woken=false;std::condition_variable cv;};
+std::mutex syncMutex;std::vector<SyncWaiter*> syncWaiters;
+void signalGuestSync(const void* key=nullptr){
+    std::lock_guard<std::mutex> l(syncMutex);
+    for(auto* waiter:syncWaiters){
+        if(waiter->woken)continue;
+        bool hit=!key;for(size_t i=0;!hit&&i<waiter->count;++i)hit=waiter->keys[i]==key;
+        if(hit){waiter->woken=true;waiter->cv.notify_one();}   // under syncMutex: the waiter cannot leave before this
+    }
+}
+constexpr auto syncSafetyCap=std::chrono::milliseconds(50);
+constexpr auto noDeadline=std::chrono::steady_clock::time_point::max();
+std::chrono::steady_clock::time_point guestDeadline(uint32_t milliseconds){
+    return milliseconds==UINT32_MAX?noDeadline:std::chrono::steady_clock::now()+std::chrono::milliseconds(milliseconds);
+}
+// ready() runs under the machine lock; returns false on deadline. wakeBy()
+// (under the machine lock too) is an extra time to re-check without a signal:
+// the due time of a timer the wait covers.
+template<class Ready,class WakeBy> bool blockGuestUntil(Ready&& ready,std::chrono::steady_clock::time_point deadline,const void* const* keys,size_t count,WakeBy&& wakeBy){
+    for(;;){
+        SyncWaiter self{keys,count};
+        {std::lock_guard<std::mutex> l(syncMutex);syncWaiters.push_back(&self);}
+        struct Unregister{SyncWaiter* self;~Unregister(){std::lock_guard<std::mutex> l(syncMutex);syncWaiters.erase(std::find(syncWaiters.begin(),syncWaiters.end(),self));}} unregister{&self};
+        checkGuestProgress();
+        if(ready())return true;
+        auto now=std::chrono::steady_clock::now();
+        if(now>=deadline)return false;
+        auto wake=std::min(std::min(deadline,now+syncSafetyCap),wakeBy());
+        if(!machineLease||!machineLease->owns_lock())throw GuestStop("Guest scheduler ownership missing");
+        {auto& trace=currentTrace();trace.func=g_cur_func;trace.esp=g_esp;}
+        State saved;saved.save();machineLease->unlock();
+        {std::unique_lock<std::mutex> l(syncMutex);
+         self.cv.wait_until(l,wake,[&]{return self.woken||stopRequested.load()||guestPaused.load();});}
+        machineLease->lock();saved.load();
+    }
+}
+template<class Ready> bool blockGuestUntil(Ready&& ready,std::chrono::steady_clock::time_point deadline,const void* const* keys,size_t count){
+    return blockGuestUntil(ready,deadline,keys,count,[]{return noDeadline;});
+}
+template<class Ready> bool blockGuestUntil(Ready&& ready,std::chrono::steady_clock::time_point deadline,std::initializer_list<const void*> keys={}){
+    return blockGuestUntil(ready,deadline,keys.begin(),keys.size());
 }
 constexpr uint32_t importBase = 0x7f000000u;
 constexpr uint32_t stackBase = 0x20000000u, stackSize = 16u << 20, tib = 0x21000000u;
@@ -253,6 +352,57 @@ constexpr uint32_t stackBase = 0x20000000u, stackSize = 16u << 20, tib = 0x21000
 void* ptr(uint32_t va, uint64_t bytes) { return memory->address(va, bytes); }
 uint32_t read32(uint32_t va) { uint32_t v; std::memcpy(&v, ptr(va,4),4); return v; }
 void write32(uint32_t va, uint32_t v) { std::memcpy(ptr(va,4),&v,4); }
+
+// The game's 29 built-in Press-Start cheat codes (bonus cars, tuning unlocks, race-type
+// unlocks, ...) live in one static table (33 reserved entries of 0x34 bytes: the code's name
+// inline at +0, kind at +0x20, id at +0x24, "activated" byte at +0x30, "available on this
+// build" byte at +0x32). Typing a code on the Press-Start screen does nothing more than set
+// that byte, and everything the cheats unlock queries it later, so setting it directly works
+// at any point in the game. The table is found through its constructor's
+// `mov [ebp+0xc], <table>; mov [ebp+0x10], 0x21` signature.
+std::mutex pendingCheatsMutex;std::vector<std::string> pendingCheats;
+static uint32_t locateCheatTable(){
+    static uint32_t found=0;static bool searched=false;
+    if(searched)return found;searched=true;
+    const unsigned char lead[]={0xc7,0x45,0x0c},tail[]={0xc7,0x45,0x10,0x21,0x00,0x00,0x00};
+    const unsigned char* image=static_cast<const unsigned char*>(ptr(imageBase,imageSize));
+    const unsigned char* end=image+imageSize;
+    for(const unsigned char* p=image;;){
+        p=static_cast<const unsigned char*>(memmem(p,size_t(end-p),lead,sizeof lead));
+        if(!p||end-p<14)break;
+        if(std::memcmp(p+7,tail,sizeof tail)==0){
+            uint32_t table;std::memcpy(&table,p+3,4);
+            if(table>=imageBase&&uint64_t(table)+33*0x34<=uint64_t(imageBase)+imageSize){found=table;break;}
+        }
+        ++p;
+    }
+    NFS_RUNTIME_LOG(found?ANDROID_LOG_INFO:ANDROID_LOG_WARN,"NFSU1","Cheat table %s%08x",found?"located at ":"not found in this Speed.exe build; cheat codes disabled (",found?found:0u);
+    return found;
+}
+// Runs on the guest thread (from the PeekMessage HLE the main loop polls every frame), so the
+// write lands between frames with the machine held.
+static void applyPendingCheatCodes(){
+    std::vector<std::string> names;
+    {std::lock_guard<std::mutex> lock(pendingCheatsMutex);names.swap(pendingCheats);}
+    if(names.empty())return;
+    uint32_t table=locateCheatTable();if(!table)return;
+    for(const std::string& name:names){
+        bool matched=false;
+        for(unsigned i=0;i<29;++i){
+            uint32_t entry=table+i*0x34;unsigned char* e=static_cast<unsigned char*>(ptr(entry,0x34));
+            size_t n=0;while(n<0x20&&e[n])++n;
+            if(n!=name.size())continue;
+            bool same=true;for(size_t k=0;k<n&&same;++k)same=std::tolower(e[k])==std::tolower((unsigned char)name[k]);
+            if(!same)continue;
+            matched=true;
+            if(!e[0x32]){NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Cheat \"%s\" is not available on this game build",name.c_str());break;}
+            e[0x30]=1;
+            NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Cheat \"%s\" activated (entry %u)",name.c_str(),i);
+            break;
+        }
+        if(!matched)NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU1","Cheat \"%s\" is not in the game's cheat table",name.c_str());
+    }
+}
 uint32_t arg(uint32_t index) { return read32(g_esp + 4 + index*4); }
 void ret(uint32_t value, uint32_t argc) { g_eax=value; g_esp+=4+argc*4; }
 std::string guestString(uint32_t address) {
@@ -340,13 +490,15 @@ void d3dDispatch(){
         auto deadline=pacer.deadline(now,frameLimit.load(std::memory_order_relaxed));
         // The renderer has returned; guest audio/streaming workers can use the
         // machine while this thread waits. Late frames incur no extra delay.
-        renderThread=true;
+        renderThread=true;machinePriority=true;
         if(deadline>now)yieldGuestMachine(0,deadline);
         else if(machine.hasWaiters())yieldGuestMachine();
         static unsigned frames=0;static auto since=std::chrono::steady_clock::now();
         if(++frames==120){serviceGuestSound();auto now=std::chrono::steady_clock::now();double seconds=std::chrono::duration<double>(now-since).count();
-            NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest D3D9 presentation %.1f FPS over %.2f seconds; bridge ~%.2f ms/frame (present %.2f), %.0f calls/frame",
-                frames/seconds,seconds,double(bridgeTime.count())/1e6/frames,double(presentTime.count())/1e6/frames,double(bridgeCalls)/frames);
+            uint64_t constantSets=0,constantHits=0;d3d9ShaderConstantStats(&constantSets,&constantHits);
+            NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest D3D9 presentation %.1f FPS over %.2f seconds; bridge ~%.2f ms/frame (present %.2f), %.0f calls/frame; shader constants %.0f/frame, %.0f%% duplicate",
+                frames/seconds,seconds,double(bridgeTime.count())/1e6/frames,double(presentTime.count())/1e6/frames,double(bridgeCalls)/frames,
+                double(constantSets)/frames,constantSets?100.0*double(constantHits)/double(constantSets):0.0);
             frames=0;since=now;bridgeTime=presentTime=std::chrono::nanoseconds{};bridgeCalls=0;}
     }ret(result,count);}
 #endif
@@ -698,11 +850,12 @@ extern "C" recomp_func_t recomp_lookup_manual(uint32_t va) {
 }
 extern "C" recomp_func_t recomp_lookup_import(uint32_t va) {
     checkGuestProgress();
-    if(va>=soundMethodBase+0x1000&&va<soundMethodBase+0x3000&&!(va%16)){soundToken=va;return soundDispatch;}
-    if(va>=inputMethodBase+0x1000&&va<inputMethodBase+0x5000&&!(va%16)){inputToken=va;return inputDispatch;}  // kinds 1-4: DirectInput, keyboard, mouse, gamepad
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+    // First: the overwhelming majority of import calls in a race frame are D3D9 methods.
     if(va>=0x7e001000u&&va<0x7e010000u&&!(va%16)){d3dToken=va;return d3dDispatch;}
 #endif
+    if(va>=soundMethodBase+0x1000&&va<soundMethodBase+0x3000&&!(va%16)){soundToken=va;return soundDispatch;}
+    if(va>=inputMethodBase+0x1000&&va<inputMethodBase+0x5000&&!(va%16)){inputToken=va;return inputDispatch;}  // kinds 1-4: DirectInput, keyboard, mouse, gamepad
     if (va<importBase || (va-importBase)%16) return nullptr;
     uint32_t index=(va-importBase)/16;
     if (index>=imports.size()) return nullptr;
@@ -710,6 +863,25 @@ extern "C" recomp_func_t recomp_lookup_import(uint32_t va) {
     if(++imports[index].calls<=3)
         NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Guest import %s from %08x",imports[index].name.c_str(),g_cur_func);
     return imports[index].function;
+}
+// One resolver per indirect call instead of manual -> lifted -> import probes in the
+// generated RECOMP_ICALL/RECOMP_ITAIL (arm64_guest.h): the vtable calls of a race frame
+// repeat a few hundred lifted targets tens of thousands of times, each otherwise a fresh
+// hash probe. Only static lifted functions are cached; manual lookups (test callbacks,
+// generated thunks in the heap arena, overrides) still come first and are not cached, so a
+// thunk address reused for other code is still re-resolved.
+extern "C" recomp_func_t nfs_icall_resolve(uint32_t va) {
+    // Sound, input, D3D9 and import stubs (0x7c000000..0x7fffffff): nothing lifted or
+    // overridden lives there, so the vtable calls of a frame skip both probes.
+    if(va-0x7c000000u<0x04000000u)return recomp_lookup_import(va);
+    recomp_func_t fn=recomp_lookup_manual(va);if(fn)return fn;
+    struct Entry{uint32_t va;recomp_func_t fn;};
+    static Entry cache[4096]{};
+    Entry& entry=cache[(va^(va>>12))&4095u];
+    if(entry.va==va)return entry.fn;
+    fn=recomp_lookup(va);
+    if(fn){entry.va=va;entry.fn=fn;return fn;}
+    return recomp_lookup_import(va);
 }
 extern "C" void recomp_unresolved(const char* kind,uint32_t va,uint32_t from) {
     throw GuestStop(std::string(kind)+" unresolved "+hex(va)+" from "+hex(from));
@@ -746,7 +918,14 @@ std::string connectGuestRuntime(const char* executable) {
         loadImage(executable);
         nfs_frontend_cursor_units(1);  // touch hands out the cursor in front-end units
         nfs_minimap_config(hostGameRoot.c_str());
-        if(guestWidescreen&&!g_nfs_exe->widescreen)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Widescreen unavailable for %s: original 4:3 geometry",g_nfs_exe->name);
+        // Without widescreen hooks the game draws 4:3 geometry whatever the back
+        // buffer size; "on" for such a build means at least an undistorted image.
+        pillarboxActive=guestPillarbox||(guestWidescreen&&!g_nfs_exe->widescreen);
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+        setD3D9Pillarbox(pillarboxActive.load());
+#endif
+        if(guestWidescreen&&!g_nfs_exe->widescreen)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Widescreen unavailable for %s: original 4:3 geometry in a 4:3 box",g_nfs_exe->name);
+        else if(guestPillarbox)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Widescreen disabled: original 4:3 geometry in a 4:3 box");
         else if(guestWidescreen){
             nfs_widescreen_init(hostGameRoot.c_str());
             // Landscape surface: the long side over the short one.
@@ -785,12 +964,13 @@ std::string connectGuestRuntime(const char* executable) {
         return std::string("Arranque guest detenido: ")+e.what();
     }
 }
-void requestGuestRuntimeStop() {stopRequested=true;}
+void requestGuestRuntimeStop() {stopRequested=true;signalGuestSync();}
 void setGuestPaused(bool paused) {
     // The AAudio stream keeps pulling from looping voices while the guest is
     // paused: in the background the last mixed sound repeated until the app
     // closed. Pause the output with the guest and restart it on resume.
     bool previous=guestPaused.exchange(paused);
+    signalGuestSync();   // blocked guest threads re-check guestPaused
     if(previous!=paused&&soundStream){
         aaudio_result_t status=paused?AAudioStream_requestPause(soundStream):AAudioStream_requestStart(soundStream);
         if(status!=AAUDIO_OK)NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFS","Audio %s failed: %d",paused?"pause":"resume",int(status));
@@ -825,8 +1005,15 @@ void setGuestFrameLimit(unsigned framesPerSecond){
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU1","Android frame limit %u FPS (0 means uncapped)",frameLimit.load());
 }
 void setGuestKey(unsigned scan,bool down){if(scan>=256)return;std::lock_guard<std::mutex> lock(inputMutex);if(bool(inputKeys[scan])==down)return;inputKeys[scan]=down?0x80:0;recordInputKey(scan,down);enqueueGuestKey(scan,down);}
+void queueGuestCheat(const std::string& name){std::lock_guard<std::mutex> lock(pendingCheatsMutex);pendingCheats.push_back(name);}
 void clearGuestInput(){std::lock_guard<std::mutex> lock(inputMutex);for(unsigned scan=0;scan<256;++scan)if(inputKeys[scan]){recordInputKey(scan,false);enqueueGuestKey(scan,false);}inputKeys.fill(0);inputMouseButtons.fill(0);inputMouseX=inputMouseY=inputMouseZ=0;touchButtons.clear();touchMoved=false;}
 void setGuestPointer(float x,float y,int phase){
+    // Touch arrives as a fraction of the surface; in a 4:3 box the game view is the box.
+    if(pillarboxActive.load()&&displayWidth.load()&&displayHeight.load()){
+        auto box=androidPillarbox(displayWidth.load(),displayHeight.load());
+        x=(x*float(displayWidth.load())-float(box.left))/float(box.width);
+        y=(y*float(displayHeight.load())-float(box.top))/float(box.height);
+    }
     guestPointerX=std::clamp(x,0.f,1.f);guestPointerY=std::clamp(y,0.f,1.f);
     {std::lock_guard<std::mutex> lock(inputMutex);touchMoved=true;if(phase!=1)touchButtons.push_back(phase==0?0x80:0);}
     enqueueGuestPointer(phase);
@@ -834,6 +1021,7 @@ void setGuestPointer(float x,float y,int phase){
 void typeGuestText(const std::vector<uint32_t>& characters){enqueueGuestText(characters);}
 void setGuestOnlineServer(const std::string& host){std::lock_guard<MachineMutex> lock(machine);if(!memory&&!host.empty())onlineServer=host;}
 void setGuestWidescreen(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestWidescreen=enabled;}
+void setGuestPillarbox(bool enabled){std::lock_guard<MachineMutex> lock(machine);if(!memory)guestPillarbox=enabled;}
 void setGuestLanguage(const char* language){
     std::lock_guard<MachineMutex> lock(machine);if(memory)return;
     for(const char* known:{"Spanish","English","French","German","Italian","Dutch","Swedish","Russian","Korean","Chinese"})

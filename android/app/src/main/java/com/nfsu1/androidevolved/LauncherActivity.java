@@ -462,7 +462,7 @@ public final class LauncherActivity extends Activity {
                 .putExtra("language", effectiveLanguage())
                 .putExtra("renderWidth", size[0]).putExtra("renderHeight", size[1])
                 .putExtra("frameCap", Integer.parseInt(GameOptions.get(this, GameOptions.FPS)))
-                .putExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on"))
+                .putExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN))
                 .putExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top"))
                 .putExtra("backBuffers", Integer.parseInt(GameOptions.get(this, GameOptions.LATENCY)))
                 .putExtra("cpuTextures", GameOptions.get(this, GameOptions.TEXTURES).equals("cpu"))

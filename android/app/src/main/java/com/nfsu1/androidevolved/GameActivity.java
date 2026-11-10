@@ -147,6 +147,7 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeResolution(int width, int height);
     private static native void nativeFrameLimit(int framesPerSecond);
     private static native void nativeWidescreen(boolean enabled);
+    private static native void nativePillarbox(boolean enabled);
     private static native void nativeOnlineServer(String host);
     private static native void nativeGamepadConnected(boolean connected);
     private static native void nativeGamepadDevices(int[] ids);
@@ -154,6 +155,7 @@ public final class GameActivity extends NativeActivity {
     private static native void nativeBackBuffers(int count);
     private static native void nativeCpuTextures(boolean enabled);
     private static native void nativeGpuDriver(String hooks, String temp, String directory, String library);
+    private static native void nativeActivateCheat(String code);
     private void showFrameLimitOptions() {
         GameOptions.Option option=GameOptions.find(GameOptions.FPS);
         String saved=GameOptions.get(this,GameOptions.FPS);int selected=0;
@@ -163,6 +165,32 @@ public final class GameActivity extends NativeActivity {
                     GameOptions.set(this,GameOptions.FPS,option.values[which]);
                     nativeFrameLimit(Integer.parseInt(option.values[which]));dialog.dismiss();
                 }).setNegativeButton(R.string.common_cancel,null).show();
+    }
+    // All 29 entries of the game's own cheat table, activated directly in it (no key presses,
+    // no Press-Start screen involved): names must match the table entries exactly.
+    private static final String[] CHEAT_CODES = {"allmylvloneparts", "allmylvl2parts", "seemylvl2parts",
+            "gimmesomecircuits", "gimmesomesprints", "gimmesomedrag", "driftdriftbaby", "slidingwithstyle", "givemenismo",
+            "119focus", "893neon", "899eclipse", "371impreza", "222lancer", "922sentra", "667tiburon", "334mygolf",
+            "77peugeot", "777rx7", "350350z", "111skyline", "221miata", "2000s2000", "889civic", "228supra",
+            "240240sx", "342integra", "239celica", "973rsx777"};
+    private static final int[] CHEAT_LABELS = {R.string.cheat_allmylvloneparts, R.string.cheat_allmylvl2parts,
+            R.string.cheat_seemylvl2parts, R.string.cheat_gimmesomecircuits, R.string.cheat_gimmesomesprints,
+            R.string.cheat_gimmesomedrag, R.string.cheat_driftdriftbaby, R.string.cheat_slidingwithstyle,
+            R.string.cheat_givemenismo, R.string.cheat_119focus, R.string.cheat_893neon, R.string.cheat_899eclipse,
+            R.string.cheat_371impreza, R.string.cheat_222lancer, R.string.cheat_922sentra, R.string.cheat_667tiburon,
+            R.string.cheat_334mygolf, R.string.cheat_77peugeot, R.string.cheat_777rx7, R.string.cheat_350350z,
+            R.string.cheat_111skyline, R.string.cheat_221miata, R.string.cheat_2000s2000, R.string.cheat_889civic,
+            R.string.cheat_228supra, R.string.cheat_240240sx, R.string.cheat_342integra, R.string.cheat_239celica,
+            R.string.cheat_973rsx777};
+    private void showCheatOptions() {
+        String[] labels = new String[CHEAT_LABELS.length];
+        for (int i = 0; i < CHEAT_LABELS.length; i++) labels[i] = getString(CHEAT_LABELS[i]);
+        // setMessage() and setItems() are mutually exclusive: the hint goes in the title.
+        new AlertDialog.Builder(this).setTitle(getString(R.string.cheats_title) + "\n" + getString(R.string.cheats_hint))
+                .setItems(labels, (dialog, which) -> {
+                    nativeActivateCheat(CHEAT_CODES[which]);
+                    Toast.makeText(this, getString(R.string.cheats_activated, CHEAT_CODES[which]), Toast.LENGTH_SHORT).show();
+                }).setNegativeButton(R.string.common_close, null).show();
     }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void showTextInput() {
@@ -221,7 +249,10 @@ public final class GameActivity extends NativeActivity {
         String language = launch.getStringExtra("language");
         nativeLanguage(language != null ? language : GameOptions.language(this));
         nativeFrameLimit(launch.getIntExtra("frameCap", Integer.parseInt(GameOptions.get(this, GameOptions.FPS))));
-        nativeWidescreen(launch.getBooleanExtra("widescreen", GameOptions.get(this, GameOptions.WIDESCREEN).equals("on")));
+        String widescreen = launch.getStringExtra("widescreen");
+        if (widescreen == null) widescreen = GameOptions.get(this, GameOptions.WIDESCREEN);
+        nativeWidescreen(widescreen.equals("on"));
+        nativePillarbox(widescreen.equals("box"));
         String server = launch.getStringExtra("onlineServer");
         nativeOnlineServer(GameOptions.validServer(server) ? server : GameOptions.onlineServer(this));
         nativeMinimapTop(launch.getBooleanExtra("minimapTop", GameOptions.get(this, GameOptions.MINIMAP).equals("top")));
@@ -242,13 +273,23 @@ public final class GameActivity extends NativeActivity {
         statusWindow = new PopupWindow(status, ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, false);
         statusWindow.setTouchable(false);
-        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions);
+        touchControls = new RacingControlsView(this, this::setTouchKey, this::showTextInput,this::showTiltOptions,this::showFrameLimitOptions,this::showCheatOptions);
         touchControls.setPointer(GameActivity::nativePointer);
         controlsWindow = new PopupWindow(touchControls, ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT, false);
         controlsWindow.setClippingEnabled(false);
     }
     public void setStatus(String message) {
+        // The game calling ExitProcess (its own "Exit" menu item, not a crash) surfaces as a
+        // GuestStop with this text. Treat it as the player quitting and close the app with it,
+        // instead of leaving them staring at a frozen status screen.
+        if (message.contains("ExitProcess(")) {
+            runOnUiThread(() -> {
+                finishAndRemoveTask();
+                android.os.Process.killProcess(android.os.Process.myPid());
+            });
+            return;
+        }
         runOnUiThread(() -> {
             if (statusHideTask != null) status.removeCallbacks(statusHideTask);
             if (message.contains("Ejecutando entrada CRT")) {
