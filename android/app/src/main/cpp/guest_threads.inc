@@ -56,6 +56,7 @@ void exitThread(){
     throw GuestThreadExit{arg(0)};
 }
 void* guestThreadEntry(void* context){
+    stayOnPerformanceCores();
     insideGuestThread=true;
     auto& thread=*static_cast<GuestThread*>(context);
     {char name[16];std::snprintf(name,sizeof name,"guest-%u",thread.id);pthread_setname_np(pthread_self(),name);}
